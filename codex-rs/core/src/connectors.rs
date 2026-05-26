@@ -263,6 +263,7 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_environment_manager(
     let auth_status_entries = compute_auth_statuses(
         mcp_servers.iter(),
         config.mcp_oauth_credentials_store_mode,
+        config.auth_keyring_backend_kind(),
         auth.as_ref(),
     )
     .await;
@@ -273,6 +274,7 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_environment_manager(
     let (mut mcp_connection_manager, cancel_token) = McpConnectionManager::new(
         &mcp_servers,
         config.mcp_oauth_credentials_store_mode,
+        config.auth_keyring_backend_kind(),
         auth_status_entries,
         &config.permissions.approval_policy,
         INITIAL_SUBMIT_ID.to_owned(),
