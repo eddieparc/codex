@@ -2446,12 +2446,12 @@ impl InitialHistory {
 
     pub fn get_resumed_session_sources(&self) -> Option<(SessionSource, Option<ThreadSource>)> {
         let meta = self.get_resumed_session_meta()?;
-        Some((meta.source.clone(), meta.thread_source))
+        Some((meta.source.clone(), meta.thread_source.clone()))
     }
 
     pub fn get_resumed_thread_source(&self) -> Option<ThreadSource> {
         self.get_resumed_session_meta()
-            .and_then(|meta| meta.thread_source)
+            .and_then(|meta| meta.thread_source.clone())
     }
 
     pub fn get_resumed_parent_thread_id(&self) -> Option<ThreadId> {
@@ -2495,20 +2495,23 @@ pub enum SessionSource {
     Unknown,
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, JsonSchema, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(rename_all = "snake_case")]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, JsonSchema, TS)]
+#[serde(try_from = "String", into = "String")]
+#[schemars(with = "String")]
+#[ts(type = "string")]
 pub enum ThreadSource {
     User,
     Subagent,
+    Feature(String),
     MemoryConsolidation,
 }
 
 impl ThreadSource {
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             ThreadSource::User => "user",
             ThreadSource::Subagent => "subagent",
+            ThreadSource::Feature(feature) => feature,
             ThreadSource::MemoryConsolidation => "memory_consolidation",
         }
     }
@@ -2520,6 +2523,20 @@ impl fmt::Display for ThreadSource {
     }
 }
 
+impl TryFrom<String> for ThreadSource {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.parse()
+    }
+}
+
+impl From<ThreadSource> for String {
+    fn from(value: ThreadSource) -> Self {
+        value.to_string()
+    }
+}
+
 impl FromStr for ThreadSource {
     type Err = String;
 
@@ -2528,7 +2545,7 @@ impl FromStr for ThreadSource {
             "user" => Ok(ThreadSource::User),
             "subagent" => Ok(ThreadSource::Subagent),
             "memory_consolidation" => Ok(ThreadSource::MemoryConsolidation),
-            other => Err(format!("unknown thread source: {other}")),
+            other => Ok(ThreadSource::Feature(other.to_string())),
         }
     }
 }
@@ -3992,6 +4009,18 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::NamedTempFile;
     use tempfile::TempDir;
+
+    #[test]
+    fn feature_thread_source_serializes_as_its_app_owned_label() -> Result<()> {
+        let source = ThreadSource::Feature("automation".to_string());
+
+        assert_eq!(serde_json::to_value(&source)?, json!("automation"));
+        assert_eq!(
+            serde_json::from_value::<ThreadSource>(json!("automation"))?,
+            source
+        );
+        Ok(())
+    }
 
     fn sorted_writable_roots(roots: Vec<WritableRoot>) -> Vec<(PathBuf, Vec<PathBuf>)> {
         let mut sorted_roots: Vec<(PathBuf, Vec<PathBuf>)> = roots
