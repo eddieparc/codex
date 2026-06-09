@@ -368,6 +368,10 @@ class CodexClient:
         """Register a private thread-scoped route for a logical goal turn."""
         return self._router.register_goal(thread_id)
 
+    def reserve_goal_operation(self, thread_id: str) -> _GoalOperationState:
+        """Reserve a private thread route before replacing its stored goal."""
+        return self._router.reserve_goal(thread_id)
+
     def unregister_goal_operation(self, state: _GoalOperationState) -> None:
         """Release routing state for one logical goal turn."""
         self._router.unregister_goal(state)
@@ -561,10 +565,11 @@ class CodexClient:
                 f"thread must be persisted before starting a goal: {thread_id}",
             )
 
-        state = self.register_goal_operation(thread_id)
+        state = self.reserve_goal_operation(thread_id)
         activated = False
         try:
             self.thread_goal_clear(thread_id)
+            state.activate_turn_routing()
             self.thread_goal_set(
                 thread_id,
                 objective=objective,
