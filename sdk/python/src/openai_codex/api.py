@@ -789,6 +789,7 @@ class TurnHandle:
                 if next_turn_id is None:
                     raise _inactive_turn_error() from exc
                 response = self._client.turn_steer(self.thread_id, next_turn_id, wire_input)
+                self._goal.resolve_active_turn(turn_id, next_turn_id)
             return response.model_copy(update={"turn_id": self.id})
         return self._client.turn_steer(
             self.thread_id,
@@ -908,6 +909,7 @@ class AsyncTurnHandle:
                     next_turn_id,
                     wire_input,
                 )
+                self._goal.resolve_active_turn(turn_id, next_turn_id)
             return response.model_copy(update={"turn_id": self.id})
         return await self._codex._client.turn_steer(
             self.thread_id,
