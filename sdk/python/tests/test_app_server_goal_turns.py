@@ -1,7 +1,9 @@
 import _thread
 import asyncio
+import faulthandler
 import threading
 import time
+from collections.abc import Iterator
 
 import pytest
 from app_server_harness import (
@@ -30,6 +32,13 @@ from openai_codex.generated.v2_all import (
     TurnCompletedNotification,
     TurnStatus,
 )
+
+
+@pytest.fixture(autouse=True)
+def dump_hanging_goal_test() -> Iterator[None]:
+    faulthandler.dump_traceback_later(30)
+    yield
+    faulthandler.cancel_dump_traceback_later()
 
 
 def _enqueue_completed_goal(
