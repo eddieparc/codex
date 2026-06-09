@@ -36,7 +36,7 @@ from openai_codex.generated.v2_all import (
 
 @pytest.fixture(autouse=True)
 def dump_hanging_goal_test() -> Iterator[None]:
-    faulthandler.dump_traceback_later(30)
+    faulthandler.dump_traceback_later(30, exit=True)
     yield
     faulthandler.cancel_dump_traceback_later()
 
