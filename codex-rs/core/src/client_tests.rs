@@ -3,7 +3,6 @@ use super::ModelClient;
 use super::PendingUnauthorizedRetry;
 use super::UnauthorizedRecoveryExecution;
 use super::X_CODEX_INSTALLATION_ID_HEADER;
-use super::X_CODEX_PARENT_THREAD_ID_HEADER;
 use super::X_CODEX_TURN_METADATA_HEADER;
 use super::X_CODEX_WINDOW_ID_HEADER;
 use super::X_OPENAI_SUBAGENT_HEADER;
@@ -293,11 +292,14 @@ fn build_ws_client_metadata_includes_window_lineage_and_turn_metadata() {
 
     client.advance_window_generation();
 
+    let request_metadata = client.request_metadata(Some("turn-123"));
     let client_metadata = client.build_ws_client_metadata(
+        &request_metadata,
         Some(r#"{"turn_id":"turn-123"}"#),
         /*use_responses_lite*/ false,
     );
     let thread_id = client.state.thread_id;
+    let session_id = client.state.session_id;
     assert_eq!(
         client_metadata,
         std::collections::HashMap::from([
@@ -309,14 +311,9 @@ fn build_ws_client_metadata_includes_window_lineage_and_turn_metadata() {
                 X_CODEX_WINDOW_ID_HEADER.to_string(),
                 format!("{thread_id}:1"),
             ),
-            (
-                X_OPENAI_SUBAGENT_HEADER.to_string(),
-                "collab_spawn".to_string(),
-            ),
-            (
-                X_CODEX_PARENT_THREAD_ID_HEADER.to_string(),
-                parent_thread_id.to_string(),
-            ),
+            ("session_id".to_string(), session_id.to_string()),
+            ("thread_id".to_string(), thread_id.to_string()),
+            ("turn_id".to_string(), "turn-123".to_string()),
             (
                 X_CODEX_TURN_METADATA_HEADER.to_string(),
                 r#"{"turn_id":"turn-123"}"#.to_string(),
@@ -550,9 +547,14 @@ fn model_client_with_counting_attestation(
 async fn websocket_handshake_includes_attestation_for_chatgpt_codex_responses() {
     let (model_client, attestation_calls) =
         model_client_with_counting_attestation(/*include_attestation*/ true);
+    let request_metadata = model_client.request_metadata(/*turn_id*/ None);
 
     let headers = model_client
-        .build_websocket_headers(/*turn_state*/ None, /*turn_metadata_header*/ None)
+        .build_websocket_headers(
+            &request_metadata,
+            /*turn_state*/ None,
+            /*turn_metadata_header*/ None,
+        )
         .await;
 
     assert_eq!(

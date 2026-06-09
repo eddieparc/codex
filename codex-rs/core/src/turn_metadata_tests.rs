@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::request_metadata::CodexRequestMetadata;
 use crate::sandbox_tags::permission_profile_sandbox_tag;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -21,6 +22,16 @@ fn test_mcp_turn_metadata_context() -> McpTurnMetadataContext<'static> {
         model: "gpt-5.4",
         reasoning_effort: Some(ReasoningEffortConfig::High),
     }
+}
+
+fn test_request_metadata(window_id: &str) -> CodexRequestMetadata {
+    CodexRequestMetadata::new(
+        "installation-a".to_string(),
+        "session-a".to_string(),
+        "thread-a".to_string(),
+        Some("turn-a".to_string()),
+        window_id.to_string(),
+    )
 }
 
 async fn create_clean_git_repo(repo_name: &str) -> (TempDir, AbsolutePathBuf) {
@@ -605,7 +616,7 @@ fn turn_metadata_state_merges_client_metadata_without_replacing_reserved_fields(
     );
 
     let model_request_header = state
-        .current_header_value_for_model_request("thread-a:1")
+        .current_header_value_for_model_request(&test_request_metadata("thread-a:1"))
         .expect("model request header");
     let model_request_json: Value =
         serde_json::from_str(&model_request_header).expect("model request json");
@@ -649,7 +660,7 @@ fn turn_metadata_state_overlays_compaction_only_on_compaction_requests() {
 
     let compact_header = state
         .current_header_value_for_compaction(
-            "thread-a:2",
+            &test_request_metadata("thread-a:2"),
             CompactionTurnMetadata::new(
                 CompactionTrigger::Auto,
                 CompactionReason::ContextLimit,
@@ -674,7 +685,7 @@ fn turn_metadata_state_overlays_compaction_only_on_compaction_requests() {
     );
 
     let regular_header = state
-        .current_header_value_for_model_request("thread-a:3")
+        .current_header_value_for_model_request(&test_request_metadata("thread-a:3"))
         .expect("regular header");
     let regular_json: Value = serde_json::from_str(&regular_header).expect("json");
     assert_eq!(regular_json["request_kind"].as_str(), Some("turn"));

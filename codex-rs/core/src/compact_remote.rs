@@ -229,10 +229,13 @@ async fn run_remote_compact_task_inner_impl(
         output_schema: None,
         output_schema_strict: true,
     };
-    let window_id = sess.services.model_client.current_window_id();
+    let request_metadata = sess
+        .services
+        .model_client
+        .request_metadata(Some(&turn_context.sub_id));
     let turn_metadata_header = turn_context
         .turn_metadata_state
-        .current_header_value_for_compaction(&window_id, compaction_metadata);
+        .current_header_value_for_compaction(&request_metadata, compaction_metadata);
     let mut new_history = sess
         .services
         .model_client
@@ -250,6 +253,7 @@ async fn run_remote_compact_task_inner_impl(
             },
             &turn_context.session_telemetry,
             &compaction_trace,
+            &request_metadata,
             turn_metadata_header.as_deref(),
         )
         .or_else(|err| async {
