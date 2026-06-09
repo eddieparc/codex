@@ -608,6 +608,11 @@ class CodexClient:
     ) -> TurnStartResponse:
         """Start a turn and register its notification queue as early as possible."""
         with self._thread_start_lock(thread_id):
+            if self._router.has_goal(thread_id):
+                raise InvalidRequestError(
+                    -32600,
+                    f"thread has an active goal operation: {thread_id}",
+                )
             payload = {
                 **_params_dict(params),
                 "threadId": thread_id,
