@@ -654,6 +654,10 @@ def test_sync_goal_run_cancellation_stops_work_and_releases_routing(tmp_path) ->
             def interrupt_when_collecting() -> None:
                 harness.responses.wait_for_requests(1)
                 deadline = time.monotonic() + 5
+                while goal_state._notifications.empty():
+                    if time.monotonic() >= deadline:
+                        raise AssertionError("goal notification was not queued")
+                    time.sleep(0.01)
                 while not goal_state._notifications.empty():
                     if time.monotonic() >= deadline:
                         raise AssertionError("goal stream did not begin collecting")
