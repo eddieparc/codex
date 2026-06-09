@@ -186,6 +186,13 @@ class _GoalOperationState:
         with self._condition:
             return self.current_turn_id
 
+    def resolve_active_turn(self, expected: str, active: str) -> None:
+        """Adopt a server-reported active id when routed state is still stale."""
+        with self._condition:
+            if self.current_turn_id in {None, expected}:
+                self.current_turn_id = active
+                self._condition.notify_all()
+
     def turn_for_interrupt(self) -> str | None:
         """Return an active or stale turn id that can resolve rollover races."""
         with self._condition:
