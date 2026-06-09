@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 
-use http::HeaderMap;
-use http::HeaderValue;
 use serde_json::Map;
 use serde_json::Value;
 
@@ -17,11 +15,11 @@ const WINDOW_ID_KEY: &str = "window_id";
 /// Canonical Codex request identity shared by Responses HTTP and websocket transports.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodexRequestMetadata {
-    installation_id: String,
-    session_id: String,
-    thread_id: String,
-    turn_id: Option<String>,
-    window_id: String,
+    pub(crate) installation_id: String,
+    pub(crate) session_id: String,
+    pub(crate) thread_id: String,
+    pub(crate) turn_id: Option<String>,
+    pub(crate) window_id: String,
 }
 
 impl CodexRequestMetadata {
@@ -39,14 +37,6 @@ impl CodexRequestMetadata {
             turn_id,
             window_id,
         }
-    }
-
-    pub(crate) fn session_id(&self) -> &str {
-        &self.session_id
-    }
-
-    pub(crate) fn thread_id(&self) -> &str {
-        &self.thread_id
     }
 
     pub(crate) fn client_metadata(
@@ -76,45 +66,25 @@ impl CodexRequestMetadata {
         client_metadata
     }
 
-    pub(crate) fn compatibility_headers(
-        &self,
-        turn_metadata_header: Option<&HeaderValue>,
-    ) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        if let Ok(header_value) = HeaderValue::from_str(&self.window_id) {
-            headers.insert(X_CODEX_WINDOW_ID_HEADER, header_value);
-        }
-        if let Some(turn_metadata_header) = turn_metadata_header {
-            headers.insert(X_CODEX_TURN_METADATA_HEADER, turn_metadata_header.clone());
-        }
-        headers
-    }
-
-    pub(crate) fn installation_header_value(&self) -> Option<HeaderValue> {
-        HeaderValue::from_str(&self.installation_id).ok()
-    }
-
     pub(crate) fn insert_turn_metadata_fields(&self, metadata: &mut Map<String, Value>) {
-        metadata.insert(
-            SESSION_ID_KEY.to_string(),
-            Value::String(self.session_id.clone()),
-        );
-        metadata.insert(
-            THREAD_ID_KEY.to_string(),
-            Value::String(self.thread_id.clone()),
-        );
+        metadata.extend([
+            (
+                SESSION_ID_KEY.to_string(),
+                Value::String(self.session_id.clone()),
+            ),
+            (
+                THREAD_ID_KEY.to_string(),
+                Value::String(self.thread_id.clone()),
+            ),
+            (
+                WINDOW_ID_KEY.to_string(),
+                Value::String(self.window_id.clone()),
+            ),
+        ]);
         if let Some(turn_id) = &self.turn_id {
             metadata.insert(TURN_ID_KEY.to_string(), Value::String(turn_id.clone()));
         } else {
             metadata.remove(TURN_ID_KEY);
         }
-        metadata.insert(
-            WINDOW_ID_KEY.to_string(),
-            Value::String(self.window_id.clone()),
-        );
     }
 }
-
-#[cfg(test)]
-#[path = "request_metadata_tests.rs"]
-mod tests;

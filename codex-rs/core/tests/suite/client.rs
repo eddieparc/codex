@@ -113,6 +113,35 @@ fn message_input_text_contains(request: &ResponsesRequest, role: &str, needle: &
         .any(|text| text.contains(needle))
 }
 
+fn assert_codex_client_metadata(
+    request_body: &serde_json::Value,
+    installation_id: &str,
+    session_id: &str,
+    thread_id: &str,
+) {
+    let client_metadata = &request_body["client_metadata"];
+    assert_eq!(
+        client_metadata["x-codex-installation-id"].as_str(),
+        Some(installation_id)
+    );
+    assert_eq!(client_metadata["session_id"].as_str(), Some(session_id));
+    assert_eq!(client_metadata["thread_id"].as_str(), Some(thread_id));
+    let turn_metadata: serde_json::Value = serde_json::from_str(
+        client_metadata["x-codex-turn-metadata"]
+            .as_str()
+            .expect("x-codex-turn-metadata client metadata"),
+    )
+    .expect("valid x-codex-turn-metadata json");
+    assert_eq!(
+        client_metadata["turn_id"].as_str(),
+        turn_metadata["turn_id"].as_str()
+    );
+    assert_eq!(
+        client_metadata["x-codex-window-id"].as_str(),
+        turn_metadata["window_id"].as_str()
+    );
+}
+
 /// Writes an `auth.json` into the provided `codex_home` with the specified parameters.
 /// Returns the fake JWT string written to `tokens.id_token`.
 #[expect(clippy::unwrap_used)]
@@ -792,31 +821,11 @@ async fn includes_session_id_thread_id_and_model_headers_in_request() {
         request_body["prompt_cache_key"].as_str(),
         Some(thread_id_string.as_str())
     );
-    assert_eq!(
-        request_body["client_metadata"]["x-codex-installation-id"].as_str(),
-        Some(installation_id.as_str())
-    );
-    assert_eq!(
-        request_body["client_metadata"]["session_id"].as_str(),
-        Some(session_id_string.as_str())
-    );
-    assert_eq!(
-        request_body["client_metadata"]["thread_id"].as_str(),
-        Some(thread_id_string.as_str())
-    );
-    let turn_metadata: serde_json::Value = serde_json::from_str(
-        request_body["client_metadata"]["x-codex-turn-metadata"]
-            .as_str()
-            .expect("x-codex-turn-metadata client metadata"),
-    )
-    .expect("valid x-codex-turn-metadata json");
-    assert_eq!(
-        request_body["client_metadata"]["turn_id"].as_str(),
-        turn_metadata["turn_id"].as_str()
-    );
-    assert_eq!(
-        request_body["client_metadata"]["x-codex-window-id"].as_str(),
-        turn_metadata["window_id"].as_str()
+    assert_codex_client_metadata(
+        &request_body,
+        installation_id.as_str(),
+        session_id_string.as_str(),
+        thread_id_string.as_str(),
     );
 }
 
@@ -1087,31 +1096,11 @@ async fn chatgpt_auth_sends_correct_request() {
     assert_eq!(request_originator, originator().value);
     assert_eq!(request_authorization, "Bearer Access Token");
     assert_eq!(request_chatgpt_account_id, "account_id");
-    assert_eq!(
-        request_body["client_metadata"]["x-codex-installation-id"].as_str(),
-        Some(installation_id.as_str())
-    );
-    assert_eq!(
-        request_body["client_metadata"]["session_id"].as_str(),
-        Some(session_id_string.as_str())
-    );
-    assert_eq!(
-        request_body["client_metadata"]["thread_id"].as_str(),
-        Some(thread_id_string.as_str())
-    );
-    let turn_metadata: serde_json::Value = serde_json::from_str(
-        request_body["client_metadata"]["x-codex-turn-metadata"]
-            .as_str()
-            .expect("x-codex-turn-metadata client metadata"),
-    )
-    .expect("valid x-codex-turn-metadata json");
-    assert_eq!(
-        request_body["client_metadata"]["turn_id"].as_str(),
-        turn_metadata["turn_id"].as_str()
-    );
-    assert_eq!(
-        request_body["client_metadata"]["x-codex-window-id"].as_str(),
-        turn_metadata["window_id"].as_str()
+    assert_codex_client_metadata(
+        &request_body,
+        installation_id.as_str(),
+        session_id_string.as_str(),
+        thread_id_string.as_str(),
     );
     assert!(request_body["stream"].as_bool().unwrap());
     assert_eq!(

@@ -520,7 +520,7 @@ impl ModelClient {
 
         let turn_metadata_header = parse_turn_metadata_header(turn_metadata_header);
         let mut extra_headers = ApiHeaderMap::new();
-        if let Some(header_value) = request_metadata.installation_header_value() {
+        if let Ok(header_value) = HeaderValue::from_str(&request_metadata.installation_id) {
             extra_headers.insert(X_CODEX_INSTALLATION_ID_HEADER, header_value);
         }
         extra_headers.extend(build_responses_headers(
@@ -532,8 +532,8 @@ impl ModelClient {
             turn_metadata_header.as_ref(),
         ));
         extra_headers.extend(build_session_headers(
-            Some(request_metadata.session_id().to_string()),
-            Some(request_metadata.thread_id().to_string()),
+            Some(request_metadata.session_id.to_string()),
+            Some(request_metadata.thread_id.to_string()),
         ));
         if let Some(header_value) = self.generate_attestation_header_for().await {
             extra_headers.insert(X_OAI_ATTESTATION_HEADER, header_value);
@@ -673,7 +673,12 @@ impl ModelClient {
         {
             extra_headers.insert(X_CODEX_PARENT_THREAD_ID_HEADER, val);
         }
-        extra_headers.extend(request_metadata.compatibility_headers(turn_metadata_header));
+        if let Ok(header_value) = HeaderValue::from_str(&request_metadata.window_id) {
+            extra_headers.insert(X_CODEX_WINDOW_ID_HEADER, header_value);
+        }
+        if let Some(turn_metadata_header) = turn_metadata_header {
+            extra_headers.insert(X_CODEX_TURN_METADATA_HEADER, turn_metadata_header.clone());
+        }
         extra_headers
     }
 
@@ -938,12 +943,12 @@ impl ModelClient {
         let turn_metadata_header = parse_turn_metadata_header(turn_metadata_header);
         let mut headers =
             build_responses_headers(self.state.beta_features_header.as_deref(), turn_state);
-        if let Ok(header_value) = HeaderValue::from_str(request_metadata.thread_id()) {
+        if let Ok(header_value) = HeaderValue::from_str(&request_metadata.thread_id) {
             headers.insert("x-client-request-id", header_value);
         }
         headers.extend(build_session_headers(
-            Some(request_metadata.session_id().to_string()),
-            Some(request_metadata.thread_id().to_string()),
+            Some(request_metadata.session_id.to_string()),
+            Some(request_metadata.thread_id.to_string()),
         ));
         headers.extend(self.build_responses_compatibility_headers(
             request_metadata,
@@ -998,8 +1003,8 @@ impl ModelClientSession {
     ) -> ApiResponsesOptions {
         let turn_metadata_header = parse_turn_metadata_header(turn_metadata_header);
         ApiResponsesOptions {
-            session_id: Some(request_metadata.session_id().to_string()),
-            thread_id: Some(request_metadata.thread_id().to_string()),
+            session_id: Some(request_metadata.session_id.to_string()),
+            thread_id: Some(request_metadata.thread_id.to_string()),
             session_source: Some(self.client.state.session_source.clone()),
             extra_headers: {
                 let mut headers = build_responses_headers(
