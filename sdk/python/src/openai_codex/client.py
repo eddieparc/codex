@@ -7,7 +7,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterator, TypeVar
+from typing import Callable, ContextManager, Iterator, TypeVar
 
 from pydantic import BaseModel
 
@@ -213,6 +213,8 @@ class CodexClient:
         self._approval_handler = approval_handler or self._default_approval_handler
         self._proc: subprocess.Popen[str] | None = None
         self._lock = threading.Lock()
+        self._thread_start_locks_guard = threading.Lock()
+        self._thread_start_locks: dict[str, ContextManager[None]] = {}
         self._router = MessageRouter()
         self._stderr_lines: deque[str] = deque(maxlen=400)
         self._stderr_thread: threading.Thread | None = None
@@ -553,6 +555,14 @@ class CodexClient:
         objective: str,
     ) -> tuple[_GoalOperationState, str]:
         """Start a logical goal and wait for its runtime-generated first turn."""
+        with self._thread_start_lock(thread_id):
+            return self._start_goal_operation(thread_id, objective)
+
+    def _start_goal_operation(
+        self,
+        thread_id: str,
+        objective: str,
+    ) -> tuple[_GoalOperationState, str]:
         thread = self.thread_read(thread_id).thread
         if not isinstance(thread.status.root, IdleThreadStatus):
             raise InvalidRequestError(
@@ -597,14 +607,23 @@ class CodexClient:
         params: V2TurnStartParams | JsonObject | None = None,
     ) -> TurnStartResponse:
         """Start a turn and register its notification queue as early as possible."""
-        payload = {
-            **_params_dict(params),
-            "threadId": thread_id,
-            "input": self._normalize_input_items(input_items),
-        }
-        started = self.request("turn/start", payload, response_model=TurnStartResponse)
-        self.register_turn_notifications(started.turn.id)
-        return started
+        with self._thread_start_lock(thread_id):
+            payload = {
+                **_params_dict(params),
+                "threadId": thread_id,
+                "input": self._normalize_input_items(input_items),
+            }
+            started = self.request("turn/start", payload, response_model=TurnStartResponse)
+            self.register_turn_notifications(started.turn.id)
+            return started
+
+    def _thread_start_lock(self, thread_id: str) -> ContextManager[None]:
+        with self._thread_start_locks_guard:
+            lock = self._thread_start_locks.get(thread_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._thread_start_locks[thread_id] = lock
+            return lock
 
     def turn_interrupt(self, thread_id: str, turn_id: str) -> TurnInterruptResponse:
         return self.request(
