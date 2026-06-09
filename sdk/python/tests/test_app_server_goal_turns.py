@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from app_server_harness import (
     AppServerHarness,
@@ -13,7 +15,7 @@ from app_server_helpers import (
     streaming_response,
 )
 
-from openai_codex import Codex
+from openai_codex import AsyncCodex, Codex
 from openai_codex.errors import InvalidRequestError
 from openai_codex.generated.notification_registry import notification_turn_id
 from openai_codex.generated.v2_all import (
@@ -83,78 +85,6 @@ def _enqueue_completed_goal(
                 ),
             ]
         )
-    )
-
-
-def _enqueue_steerable_goal(
-    harness: AppServerHarness,
-    prefix: str,
-    *,
-    initial_text: str,
-    continuation_chunks: list[str],
-    final_text: str,
-) -> None:
-    harness.responses.enqueue_assistant_message(
-        initial_text,
-        response_id=f"{prefix}-initial",
-    )
-    harness.responses.enqueue_sse(
-        streaming_response(
-            f"{prefix}-continuation",
-            f"msg-{prefix}-continuation",
-            continuation_chunks,
-        ),
-        delay_between_events_s=0.15,
-    )
-    harness.responses.enqueue_sse(
-        sse(
-            [
-                ev_response_created(f"{prefix}-complete-tool"),
-                ev_function_call(
-                    f"call-{prefix}-complete",
-                    "update_goal",
-                    '{"status":"complete"}',
-                ),
-                ev_completed_with_usage(
-                    f"{prefix}-complete-tool",
-                    input_tokens=1,
-                    cached_input_tokens=0,
-                    output_tokens=1,
-                    reasoning_output_tokens=0,
-                    total_tokens=2,
-                ),
-            ]
-        )
-    )
-    harness.responses.enqueue_assistant_message(
-        final_text,
-        response_id=f"{prefix}-final",
-    )
-
-
-def _enqueue_interruptible_goal(
-    harness: AppServerHarness,
-    prefix: str,
-    *,
-    initial_text: str,
-    continuation_chunks: list[str],
-    follow_up_text: str,
-) -> None:
-    harness.responses.enqueue_assistant_message(
-        initial_text,
-        response_id=f"{prefix}-initial",
-    )
-    harness.responses.enqueue_sse(
-        streaming_response(
-            f"{prefix}-continuation",
-            f"msg-{prefix}-continuation",
-            continuation_chunks,
-        ),
-        delay_between_events_s=0.2,
-    )
-    harness.responses.enqueue_assistant_message(
-        follow_up_text,
-        response_id=f"{prefix}-follow-up",
     )
 
 
@@ -389,3 +319,37 @@ def test_goal_replaces_an_existing_persisted_goal(tmp_path) -> None:
         "continuation_has_replacement": True,
         "continuation_has_previous": False,
     }
+
+
+def test_async_goal_run_matches_sync_logical_result(tmp_path) -> None:
+    """The async public API should aggregate the same real continuation lifecycle."""
+
+    async def scenario() -> None:
+        with AppServerHarness(tmp_path, enable_goals=True) as harness:
+            _enqueue_completed_goal(
+                harness,
+                "async-run",
+                initial_text="Async initial pass.",
+                final_text="Async goal complete.",
+            )
+
+            async with AsyncCodex(config=harness.app_server_config()) as codex:
+                thread = await codex.thread_start()
+                result = await thread.run_goal("Finish the async goal")
+                requests = harness.responses.wait_for_requests(3)
+
+        assert {
+            "status": result.status,
+            "messages": agent_message_texts_from_items(result.items),
+            "final_response": result.final_response,
+            "continuation_has_objective": (
+                "Finish the async goal" in _continuation_text(requests[0])
+            ),
+        } == {
+            "status": TurnStatus.completed,
+            "messages": ["Async initial pass.", "Async goal complete."],
+            "final_response": "Async goal complete.",
+            "continuation_has_objective": True,
+        }
+
+    asyncio.run(scenario())
