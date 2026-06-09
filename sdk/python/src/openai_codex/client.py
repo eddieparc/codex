@@ -525,7 +525,7 @@ class CodexClient:
         self._interrupt_goal_operation(state)
 
     def _interrupt_goal_operation(self, state: _GoalOperationState) -> None:
-        turn_id = state.current_turn()
+        turn_id = state.turn_for_interrupt()
         if turn_id is None:
             return
         try:
@@ -561,10 +561,10 @@ class CodexClient:
                 f"thread must be persisted before starting a goal: {thread_id}",
             )
 
-        self.thread_goal_clear(thread_id)
         state = self.register_goal_operation(thread_id)
         activated = False
         try:
+            self.thread_goal_clear(thread_id)
             self.thread_goal_set(
                 thread_id,
                 objective=objective,
