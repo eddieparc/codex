@@ -10,6 +10,7 @@ use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use super::BetweenSamplingPhase;
 use super::TurnProfilePhase;
 use super::TurnProfileState;
 use super::TurnTimingState;
@@ -162,10 +163,34 @@ fn turn_profile_breaks_down_sampling_blocking_and_retry_overhead() {
         started_at + Duration::from_millis(600),
         TurnProfilePhase::Sampling,
     );
-    let _ = state.begin_tool_blocking(started_at + Duration::from_millis(600));
+    let _ = state.begin_tool_blocking(started_at + Duration::from_millis(650));
     state.end_phase(
         started_at + Duration::from_millis(900),
         TurnProfilePhase::ToolBlocking,
+    );
+    state.mark_between_sampling_phase(
+        started_at + Duration::from_millis(910),
+        BetweenSamplingPhase::Retry,
+    );
+    state.mark_between_sampling_phase(
+        started_at + Duration::from_millis(940),
+        BetweenSamplingPhase::PostResponse,
+    );
+    state.mark_between_sampling_phase(
+        started_at + Duration::from_millis(950),
+        BetweenSamplingPhase::Compaction,
+    );
+    state.mark_between_sampling_phase(
+        started_at + Duration::from_millis(970),
+        BetweenSamplingPhase::FollowUp,
+    );
+    state.mark_between_sampling_phase(
+        started_at + Duration::from_millis(980),
+        BetweenSamplingPhase::RequestPreparation,
+    );
+    state.mark_between_sampling_phase(
+        started_at + Duration::from_millis(990),
+        BetweenSamplingPhase::PostResponse,
     );
     state.record_sampling_retry();
     let _ = state.begin_sampling(started_at + Duration::from_millis(1_000));
@@ -179,11 +204,39 @@ fn turn_profile_breaks_down_sampling_blocking_and_retry_overhead() {
         TurnProfile {
             before_first_sampling_ms: 100,
             sampling_ms: 700,
-            between_sampling_overhead_ms: 100,
-            tool_blocking_ms: 300,
+            between_sampling_overhead_ms: 150,
+            between_sampling_post_response_ms: 80,
+            between_sampling_retry_ms: 30,
+            between_sampling_compaction_ms: 20,
+            between_sampling_follow_up_ms: 10,
+            between_sampling_request_preparation_ms: 10,
+            between_sampling_other_ms: 0,
+            tool_blocking_ms: 250,
             after_last_sampling_ms: 100,
             sampling_request_count: 2,
             sampling_retry_count: 1,
         }
     );
+}
+
+#[test]
+fn turn_profile_does_not_commit_between_sampling_phases_without_another_sample() {
+    let started_at = Instant::now();
+    let mut state = TurnProfileState::default();
+    state.start(started_at);
+
+    let _ = state.begin_sampling(started_at + Duration::from_millis(100));
+    state.end_phase(
+        started_at + Duration::from_millis(200),
+        TurnProfilePhase::Sampling,
+    );
+    state.mark_between_sampling_phase(
+        started_at + Duration::from_millis(200),
+        BetweenSamplingPhase::Compaction,
+    );
+
+    let profile = state.complete(started_at + Duration::from_millis(300));
+    assert_eq!(profile.between_sampling_overhead_ms, 0);
+    assert_eq!(profile.between_sampling_compaction_ms, 0);
+    assert_eq!(profile.after_last_sampling_ms, 100);
 }

@@ -931,14 +931,36 @@ async fn turn_start_tracks_turn_event_analytics() -> Result<()> {
         "before_first_sampling_ms",
         "sampling_ms",
         "between_sampling_overhead_ms",
+        "between_sampling_post_response_ms",
+        "between_sampling_retry_ms",
+        "between_sampling_compaction_ms",
+        "between_sampling_follow_up_ms",
+        "between_sampling_request_preparation_ms",
+        "between_sampling_other_ms",
         "tool_blocking_ms",
         "after_last_sampling_ms",
     ]
     .into_iter()
     .all(|field| params[field].as_u64().is_some());
+    let between_sampling_breakdown_ms = [
+        "between_sampling_post_response_ms",
+        "between_sampling_retry_ms",
+        "between_sampling_compaction_ms",
+        "between_sampling_follow_up_ms",
+        "between_sampling_request_preparation_ms",
+        "between_sampling_other_ms",
+    ]
+    .into_iter()
+    .filter_map(|field| params[field].as_u64())
+    .sum::<u64>();
     assert_eq!(
         json!({
             "timingsAreNumbers": timings_are_numbers,
+            "betweenSamplingBreakdownCloses":
+                params["between_sampling_overhead_ms"] == between_sampling_breakdown_ms,
+            "retryTimingIsPositive": params["between_sampling_retry_ms"]
+                .as_u64()
+                .is_some_and(|duration| duration > 0),
             "toolBlockingMs": params["tool_blocking_ms"],
             "samplingRequestCount": params["sampling_request_count"],
             "samplingRetryCount": params["sampling_retry_count"],
@@ -946,6 +968,8 @@ async fn turn_start_tracks_turn_event_analytics() -> Result<()> {
         }),
         json!({
             "timingsAreNumbers": true,
+            "betweenSamplingBreakdownCloses": true,
+            "retryTimingIsPositive": true,
             "toolBlockingMs": 0,
             "samplingRequestCount": 2,
             "samplingRetryCount": 1,

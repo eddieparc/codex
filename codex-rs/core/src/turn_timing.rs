@@ -58,12 +58,23 @@ struct TurnProfileState {
     started_at: Option<Instant>,
     last_transition_at: Option<Instant>,
     active_phase: Option<TurnProfilePhase>,
+    active_between_sampling_phase: Option<BetweenSamplingPhase>,
     seen_sampling: bool,
     before_first_sampling: Duration,
     sampling: Duration,
     between_sampling_overhead: Duration,
+    between_sampling_post_response: Duration,
+    between_sampling_retry: Duration,
+    between_sampling_compaction: Duration,
+    between_sampling_follow_up: Duration,
+    between_sampling_request_preparation: Duration,
     tool_blocking: Duration,
     pending_idle_after_sampling: Duration,
+    pending_between_sampling_post_response: Duration,
+    pending_between_sampling_retry: Duration,
+    pending_between_sampling_compaction: Duration,
+    pending_between_sampling_follow_up: Duration,
+    pending_between_sampling_request_preparation: Duration,
     sampling_request_count: u32,
     sampling_retry_count: u32,
     completed_profile: Option<TurnProfile>,
@@ -73,6 +84,15 @@ struct TurnProfileState {
 enum TurnProfilePhase {
     Sampling,
     ToolBlocking,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BetweenSamplingPhase {
+    PostResponse,
+    Retry,
+    Compaction,
+    FollowUp,
+    RequestPreparation,
 }
 
 #[must_use]
@@ -131,6 +151,22 @@ impl TurnTimingState {
         self.profile_state().record_sampling_retry();
     }
 
+    pub(crate) fn mark_between_sampling_retry(&self) {
+        self.mark_between_sampling_phase(BetweenSamplingPhase::Retry);
+    }
+
+    pub(crate) fn mark_between_sampling_compaction(&self) {
+        self.mark_between_sampling_phase(BetweenSamplingPhase::Compaction);
+    }
+
+    pub(crate) fn mark_between_sampling_follow_up(&self) {
+        self.mark_between_sampling_phase(BetweenSamplingPhase::FollowUp);
+    }
+
+    pub(crate) fn mark_between_sampling_request_preparation(&self) {
+        self.mark_between_sampling_phase(BetweenSamplingPhase::RequestPreparation);
+    }
+
     pub(crate) fn begin_tool_blocking(self: &Arc<Self>) -> TurnProfileTimingGuard {
         let active = self.profile_state().begin_tool_blocking(Instant::now());
         TurnProfileTimingGuard {
@@ -163,6 +199,11 @@ impl TurnTimingState {
         self.profile
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn mark_between_sampling_phase(&self, phase: BetweenSamplingPhase) {
+        self.profile_state()
+            .mark_between_sampling_phase(Instant::now(), phase);
     }
 }
 
@@ -210,6 +251,15 @@ impl TurnProfileState {
         self.advance(now);
         if self.seen_sampling {
             self.between_sampling_overhead += std::mem::take(&mut self.pending_idle_after_sampling);
+            self.between_sampling_post_response +=
+                std::mem::take(&mut self.pending_between_sampling_post_response);
+            self.between_sampling_retry += std::mem::take(&mut self.pending_between_sampling_retry);
+            self.between_sampling_compaction +=
+                std::mem::take(&mut self.pending_between_sampling_compaction);
+            self.between_sampling_follow_up +=
+                std::mem::take(&mut self.pending_between_sampling_follow_up);
+            self.between_sampling_request_preparation +=
+                std::mem::take(&mut self.pending_between_sampling_request_preparation);
         }
         self.seen_sampling = true;
         self.active_phase = Some(TurnProfilePhase::Sampling);
@@ -221,6 +271,14 @@ impl TurnProfileState {
         if self.completed_profile.is_none() && self.started_at.is_some() {
             self.sampling_retry_count = self.sampling_retry_count.saturating_add(1);
         }
+    }
+
+    fn mark_between_sampling_phase(&mut self, now: Instant, phase: BetweenSamplingPhase) {
+        if self.completed_profile.is_some() || !self.seen_sampling || self.active_phase.is_some() {
+            return;
+        }
+        self.advance(now);
+        self.active_between_sampling_phase = Some(phase);
     }
 
     fn begin_tool_blocking(&mut self, now: Instant) -> bool {
@@ -241,6 +299,9 @@ impl TurnProfileState {
         }
         self.advance(now);
         self.active_phase = None;
+        if phase == TurnProfilePhase::Sampling {
+            self.active_between_sampling_phase = Some(BetweenSamplingPhase::PostResponse);
+        }
     }
 
     fn advance(&mut self, now: Instant) {
@@ -251,7 +312,27 @@ impl TurnProfileState {
         match self.active_phase {
             Some(TurnProfilePhase::Sampling) => self.sampling += elapsed,
             Some(TurnProfilePhase::ToolBlocking) => self.tool_blocking += elapsed,
-            None if self.seen_sampling => self.pending_idle_after_sampling += elapsed,
+            None if self.seen_sampling => {
+                self.pending_idle_after_sampling += elapsed;
+                match self.active_between_sampling_phase {
+                    Some(BetweenSamplingPhase::PostResponse) => {
+                        self.pending_between_sampling_post_response += elapsed;
+                    }
+                    Some(BetweenSamplingPhase::Retry) => {
+                        self.pending_between_sampling_retry += elapsed;
+                    }
+                    Some(BetweenSamplingPhase::Compaction) => {
+                        self.pending_between_sampling_compaction += elapsed;
+                    }
+                    Some(BetweenSamplingPhase::FollowUp) => {
+                        self.pending_between_sampling_follow_up += elapsed;
+                    }
+                    Some(BetweenSamplingPhase::RequestPreparation) => {
+                        self.pending_between_sampling_request_preparation += elapsed;
+                    }
+                    None => {}
+                }
+            }
             None => self.before_first_sampling += elapsed,
         }
     }
@@ -273,6 +354,16 @@ impl TurnProfileState {
             before_first_sampling_ms: duration_to_u64_ms(self.before_first_sampling),
             sampling_ms: duration_to_u64_ms(self.sampling),
             between_sampling_overhead_ms: duration_to_u64_ms(self.between_sampling_overhead),
+            between_sampling_post_response_ms: duration_to_u64_ms(
+                self.between_sampling_post_response,
+            ),
+            between_sampling_retry_ms: duration_to_u64_ms(self.between_sampling_retry),
+            between_sampling_compaction_ms: duration_to_u64_ms(self.between_sampling_compaction),
+            between_sampling_follow_up_ms: duration_to_u64_ms(self.between_sampling_follow_up),
+            between_sampling_request_preparation_ms: duration_to_u64_ms(
+                self.between_sampling_request_preparation,
+            ),
+            between_sampling_other_ms: 0,
             tool_blocking_ms: duration_to_u64_ms(self.tool_blocking),
             after_last_sampling_ms: duration_to_u64_ms(after_last_sampling),
             sampling_request_count: self.sampling_request_count,
@@ -296,7 +387,35 @@ impl TurnProfileState {
             None => profile.before_first_sampling_ms += rounding_ms,
         }
 
+        profile.between_sampling_post_response_ms = profile
+            .between_sampling_post_response_ms
+            .min(profile.between_sampling_overhead_ms);
+        let mut remaining_between_sampling_ms = profile
+            .between_sampling_overhead_ms
+            .saturating_sub(profile.between_sampling_post_response_ms);
+        profile.between_sampling_retry_ms = profile
+            .between_sampling_retry_ms
+            .min(remaining_between_sampling_ms);
+        remaining_between_sampling_ms =
+            remaining_between_sampling_ms.saturating_sub(profile.between_sampling_retry_ms);
+        profile.between_sampling_compaction_ms = profile
+            .between_sampling_compaction_ms
+            .min(remaining_between_sampling_ms);
+        remaining_between_sampling_ms =
+            remaining_between_sampling_ms.saturating_sub(profile.between_sampling_compaction_ms);
+        profile.between_sampling_follow_up_ms = profile
+            .between_sampling_follow_up_ms
+            .min(remaining_between_sampling_ms);
+        remaining_between_sampling_ms =
+            remaining_between_sampling_ms.saturating_sub(profile.between_sampling_follow_up_ms);
+        profile.between_sampling_request_preparation_ms = profile
+            .between_sampling_request_preparation_ms
+            .min(remaining_between_sampling_ms);
+        profile.between_sampling_other_ms = remaining_between_sampling_ms
+            .saturating_sub(profile.between_sampling_request_preparation_ms);
+
         self.active_phase = None;
+        self.active_between_sampling_phase = None;
         self.completed_profile = Some(profile.clone());
         profile
     }
