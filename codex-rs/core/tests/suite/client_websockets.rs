@@ -1,6 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 use codex_api::WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY;
 use codex_api::WS_REQUEST_HEADER_TRACESTATE_CLIENT_METADATA_KEY;
+use codex_core::CodexRequestMetadata;
 use codex_core::ModelClient;
 use codex_core::ModelClientSession;
 use codex_core::Prompt;
@@ -340,6 +341,7 @@ async fn responses_websocket_request_prewarm_reuses_connection() {
     let harness = websocket_harness_with_options(&server, /*runtime_metrics_enabled*/ true).await;
     let mut client_session = harness.client.new_session();
     let prompt = prompt_with_input(vec![message_item("hello")]);
+    let request_metadata = harness.client.request_metadata(/*turn_id*/ None);
     client_session
         .prewarm_websocket(
             &prompt,
@@ -348,6 +350,7 @@ async fn responses_websocket_request_prewarm_reuses_connection() {
             harness.effort.clone(),
             harness.summary,
             /*service_tier*/ None,
+            &request_metadata,
             /*turn_metadata_header*/ None,
         )
         .await
@@ -393,6 +396,7 @@ async fn responses_websocket_request_prewarm_traces_logical_request() {
     let harness = websocket_harness_with_options(&server, /*runtime_metrics_enabled*/ true).await;
     let mut client_session = harness.client.new_session();
     let prompt = prompt_with_input(vec![message_item("hello")]);
+    let request_metadata = harness.client.request_metadata(/*turn_id*/ None);
 
     client_session
         .prewarm_websocket(
@@ -402,6 +406,7 @@ async fn responses_websocket_request_prewarm_traces_logical_request() {
             harness.effort.clone(),
             harness.summary,
             /*service_tier*/ None,
+            &request_metadata,
             /*turn_metadata_header*/ None,
         )
         .await
@@ -447,6 +452,7 @@ async fn responses_websocket_request_prewarm_traces_logical_request() {
             harness.effort.clone(),
             harness.summary,
             /*service_tier*/ None,
+            &request_metadata,
             /*turn_metadata_header*/ None,
             &inference_trace,
         )
@@ -610,6 +616,7 @@ async fn responses_websocket_preconnect_is_reused_even_with_header_changes() {
         .await
         .expect("websocket preconnect failed");
     let prompt = prompt_with_input(vec![message_item("hello")]);
+    let request_metadata = harness.client.request_metadata(/*turn_id*/ None);
     let mut stream = client_session
         .stream(
             &prompt,
@@ -618,6 +625,7 @@ async fn responses_websocket_preconnect_is_reused_even_with_header_changes() {
             harness.effort.clone(),
             harness.summary,
             /*service_tier*/ None,
+            &request_metadata,
             /*turn_metadata_header*/ None,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
@@ -649,6 +657,7 @@ async fn responses_websocket_request_prewarm_is_reused_even_with_header_changes(
     let harness = websocket_harness_with_options(&server, /*runtime_metrics_enabled*/ true).await;
     let mut client_session = harness.client.new_session();
     let prompt = prompt_with_input(vec![message_item("hello")]);
+    let request_metadata = harness.client.request_metadata(/*turn_id*/ None);
     client_session
         .prewarm_websocket(
             &prompt,
@@ -657,6 +666,7 @@ async fn responses_websocket_request_prewarm_is_reused_even_with_header_changes(
             harness.effort.clone(),
             harness.summary,
             /*service_tier*/ None,
+            &request_metadata,
             /*turn_metadata_header*/ None,
         )
         .await
@@ -669,6 +679,7 @@ async fn responses_websocket_request_prewarm_is_reused_even_with_header_changes(
             harness.effort.clone(),
             harness.summary,
             /*service_tier*/ None,
+            &request_metadata,
             /*turn_metadata_header*/ None,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
@@ -715,6 +726,7 @@ async fn responses_websocket_prewarm_uses_v2_when_provider_supports_websockets()
     let harness = websocket_harness_with_options(&server, /*runtime_metrics_enabled*/ false).await;
     let mut client_session = harness.client.new_session();
     let prompt = prompt_with_input(vec![message_item("hello")]);
+    let request_metadata = harness.client.request_metadata(/*turn_id*/ None);
     client_session
         .prewarm_websocket(
             &prompt,
@@ -723,6 +735,7 @@ async fn responses_websocket_prewarm_uses_v2_when_provider_supports_websockets()
             harness.effort.clone(),
             harness.summary,
             /*service_tier*/ None,
+            &request_metadata,
             /*turn_metadata_header*/ None,
         )
         .await
@@ -1063,6 +1076,7 @@ async fn responses_websocket_emits_reasoning_included_event() {
     let harness = websocket_harness(&server).await;
     let mut client_session = harness.client.new_session();
     let prompt = prompt_with_input(vec![message_item("hello")]);
+    let request_metadata = harness.client.request_metadata(/*turn_id*/ None);
 
     let mut stream = client_session
         .stream(
@@ -1072,6 +1086,7 @@ async fn responses_websocket_emits_reasoning_included_event() {
             harness.effort.clone(),
             harness.summary,
             /*service_tier*/ None,
+            &request_metadata,
             /*turn_metadata_header*/ None,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
@@ -1137,6 +1152,7 @@ async fn responses_websocket_emits_rate_limit_events() {
     let harness = websocket_harness(&server).await;
     let mut client_session = harness.client.new_session();
     let prompt = prompt_with_input(vec![message_item("hello")]);
+    let request_metadata = harness.client.request_metadata(/*turn_id*/ None);
 
     let mut stream = client_session
         .stream(
@@ -1146,6 +1162,7 @@ async fn responses_websocket_emits_rate_limit_events() {
             harness.effort.clone(),
             harness.summary,
             /*service_tier*/ None,
+            &request_metadata,
             /*turn_metadata_header*/ None,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
@@ -1469,20 +1486,23 @@ async fn responses_websocket_forwards_turn_metadata_on_initial_and_incremental_c
         assistant_message_item("msg-1", "assistant output"),
         message_item("second"),
     ]);
+    let request_metadata = harness.client.request_metadata(Some("turn-123"));
 
-    stream_until_complete_with_turn_metadata(
+    stream_until_complete_with_request_metadata(
         &mut client_session,
         &harness,
         &prompt_one,
         /*service_tier*/ None,
+        &request_metadata,
         Some(first_turn_metadata),
     )
     .await;
-    stream_until_complete_with_turn_metadata(
+    stream_until_complete_with_request_metadata(
         &mut client_session,
         &harness,
         &prompt_two,
         /*service_tier*/ None,
+        &request_metadata,
         Some(enriched_turn_metadata),
     )
     .await;
@@ -1540,12 +1560,14 @@ async fn responses_websocket_preserves_custom_turn_metadata_fields() {
         "origin": "app-server",
     })
     .to_string();
+    let request_metadata = harness.client.request_metadata(Some("turn-123"));
 
-    stream_until_complete_with_turn_metadata(
+    stream_until_complete_with_request_metadata(
         &mut client_session,
         &harness,
         &prompt,
         /*service_tier*/ None,
+        &request_metadata,
         Some(&turn_metadata),
     )
     .await;
@@ -1792,6 +1814,7 @@ async fn responses_websocket_v2_after_error_uses_full_create_without_previous_re
 
     stream_until_complete(&mut session, &harness, &prompt_one).await;
 
+    let request_metadata = harness.client.request_metadata(/*turn_id*/ None);
     let mut second_stream = session
         .stream(
             &prompt_two,
@@ -1800,6 +1823,7 @@ async fn responses_websocket_v2_after_error_uses_full_create_without_previous_re
             harness.effort.clone(),
             harness.summary,
             /*service_tier*/ None,
+            &request_metadata,
             /*turn_metadata_header*/ None,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
@@ -1880,6 +1904,7 @@ async fn responses_websocket_v2_surfaces_terminal_error_without_close_handshake(
 
     stream_until_complete(&mut session, &harness, &prompt_one).await;
 
+    let request_metadata = harness.client.request_metadata(/*turn_id*/ None);
     let mut second_stream = session
         .stream(
             &prompt_two,
@@ -1888,6 +1913,7 @@ async fn responses_websocket_v2_surfaces_terminal_error_without_close_handshake(
             harness.effort.clone(),
             harness.summary,
             /*service_tier*/ None,
+            &request_metadata,
             /*turn_metadata_header*/ None,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
@@ -2114,6 +2140,7 @@ async fn stream_until_complete_with_model_info(
     model_info: &ModelInfo,
     expected_response_id: &str,
 ) {
+    let request_metadata = harness.client.request_metadata(/*turn_id*/ None);
     let mut stream = client_session
         .stream(
             prompt,
@@ -2122,6 +2149,7 @@ async fn stream_until_complete_with_model_info(
             harness.effort.clone(),
             harness.summary,
             /*service_tier*/ None,
+            &request_metadata,
             /*turn_metadata_header*/ None,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
@@ -2164,11 +2192,13 @@ async fn stream_until_complete_with_turn_metadata(
     service_tier: Option<ServiceTier>,
     turn_metadata_header: Option<&str>,
 ) {
+    let request_metadata = harness.client.request_metadata(/*turn_id*/ None);
     stream_until_complete_with_request_metadata(
         client_session,
         harness,
         prompt,
         service_tier,
+        &request_metadata,
         turn_metadata_header,
     )
     .await;
@@ -2179,6 +2209,7 @@ async fn stream_until_complete_with_request_metadata(
     harness: &WebsocketTestHarness,
     prompt: &Prompt,
     service_tier: Option<ServiceTier>,
+    request_metadata: &CodexRequestMetadata,
     turn_metadata_header: Option<&str>,
 ) {
     let mut stream = client_session
@@ -2189,6 +2220,7 @@ async fn stream_until_complete_with_request_metadata(
             harness.effort.clone(),
             harness.summary,
             service_tier.map(|service_tier| service_tier.request_value().to_string()),
+            request_metadata,
             turn_metadata_header,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )

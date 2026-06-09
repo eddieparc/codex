@@ -1781,7 +1781,7 @@ async fn try_run_sampling_request(
     );
     let sampling_timing_guard = turn_context.turn_timing_state.begin_sampling();
     let mut stream = client_session
-        .stream_with_metadata(
+        .stream(
             prompt,
             &turn_context.model_info,
             &turn_context.session_telemetry,

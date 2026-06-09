@@ -458,6 +458,7 @@ impl ModelClient {
     ///
     /// The model selection and telemetry context are passed explicitly to keep `ModelClient`
     /// session-scoped.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn compact_conversation_history(
         &self,
         prompt: &Prompt,
@@ -651,7 +652,7 @@ impl ModelClient {
         extra_headers
     }
 
-    pub(crate) fn request_metadata(&self, turn_id: Option<&str>) -> CodexRequestMetadata {
+    pub fn request_metadata(&self, turn_id: Option<&str>) -> CodexRequestMetadata {
         CodexRequestMetadata::new(
             self.state.installation_id.clone(),
             self.state.session_id.to_string(),
@@ -747,6 +748,7 @@ impl ModelClient {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_responses_request(
         &self,
         provider: &codex_api::Provider,
@@ -1565,32 +1567,6 @@ impl ModelClientSession {
         effort: Option<ReasoningEffortConfig>,
         summary: ReasoningSummaryConfig,
         service_tier: Option<String>,
-        turn_metadata_header: Option<&str>,
-    ) -> Result<()> {
-        let turn_id = turn_id_from_turn_metadata_header(turn_metadata_header);
-        let request_metadata = self.client.request_metadata(turn_id.as_deref());
-        self.prewarm_websocket_with_metadata(
-            prompt,
-            model_info,
-            session_telemetry,
-            effort,
-            summary,
-            service_tier,
-            &request_metadata,
-            turn_metadata_header,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn prewarm_websocket_with_metadata(
-        &mut self,
-        prompt: &Prompt,
-        model_info: &ModelInfo,
-        session_telemetry: &SessionTelemetry,
-        effort: Option<ReasoningEffortConfig>,
-        summary: ReasoningSummaryConfig,
-        service_tier: Option<String>,
         request_metadata: &CodexRequestMetadata,
         turn_metadata_header: Option<&str>,
     ) -> Result<()> {
@@ -1647,34 +1623,6 @@ impl ModelClientSession {
     /// disabled, but is always explicit so transport paths do not need separate trace/no-trace
     /// branches.
     pub async fn stream(
-        &mut self,
-        prompt: &Prompt,
-        model_info: &ModelInfo,
-        session_telemetry: &SessionTelemetry,
-        effort: Option<ReasoningEffortConfig>,
-        summary: ReasoningSummaryConfig,
-        service_tier: Option<String>,
-        turn_metadata_header: Option<&str>,
-        inference_trace: &InferenceTraceContext,
-    ) -> Result<ResponseStream> {
-        let turn_id = turn_id_from_turn_metadata_header(turn_metadata_header);
-        let request_metadata = self.client.request_metadata(turn_id.as_deref());
-        self.stream_with_metadata(
-            prompt,
-            model_info,
-            session_telemetry,
-            effort,
-            summary,
-            service_tier,
-            &request_metadata,
-            turn_metadata_header,
-            inference_trace,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn stream_with_metadata(
         &mut self,
         prompt: &Prompt,
         model_info: &ModelInfo,
@@ -1755,16 +1703,6 @@ impl ModelClientSession {
 /// metadata with the same sanitization path used when constructing headers.
 fn parse_turn_metadata_header(turn_metadata_header: Option<&str>) -> Option<HeaderValue> {
     turn_metadata_header.and_then(|value| HeaderValue::from_str(value).ok())
-}
-
-fn turn_id_from_turn_metadata_header(turn_metadata_header: Option<&str>) -> Option<String> {
-    let metadata =
-        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(turn_metadata_header?)
-            .ok()?;
-    metadata
-        .get("turn_id")
-        .and_then(serde_json::Value::as_str)
-        .map(ToString::to_string)
 }
 
 /// Stamp a ResponsesWsRequest with the current time.

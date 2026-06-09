@@ -589,7 +589,7 @@ async fn drain_to_completed(
     prompt: &Prompt,
 ) -> CodexResult<()> {
     let mut stream = client_session
-        .stream_with_metadata(
+        .stream(
             prompt,
             &turn_context.model_info,
             &turn_context.session_telemetry,

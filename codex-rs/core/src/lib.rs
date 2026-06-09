@@ -15,6 +15,8 @@ mod realtime_prompt;
 mod request_metadata;
 mod responses_retry;
 pub(crate) mod session;
+#[doc(hidden)]
+pub use request_metadata::CodexRequestMetadata;
 pub use session::SteerInputError;
 mod codex_thread;
 mod compact_remote;

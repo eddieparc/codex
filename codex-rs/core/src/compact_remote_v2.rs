@@ -342,7 +342,7 @@ async fn run_remote_compaction_request_v2(
     let mut retries = 0;
     loop {
         let result = match client_session
-            .stream_with_metadata(
+            .stream(
                 prompt,
                 &turn_context.model_info,
                 &turn_context.session_telemetry,
