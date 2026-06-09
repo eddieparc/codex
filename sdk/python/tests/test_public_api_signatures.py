@@ -185,6 +185,31 @@ def test_turn_input_methods_accept_string_shortcut() -> None:
     )
 
 
+def test_dedicated_goal_operations_have_pythonic_signatures() -> None:
+    """Goal operations should accept only an objective and return existing turn types."""
+    goal_methods = {
+        Thread.run_goal: "TurnResult",
+        Thread.start_goal: "TurnHandle",
+        AsyncThread.run_goal: "TurnResult",
+        AsyncThread.start_goal: "AsyncTurnHandle",
+    }
+    ordinary_methods = [Thread.run, Thread.turn, AsyncThread.run, AsyncThread.turn]
+
+    assert {
+        fn: (
+            list(inspect.signature(fn).parameters),
+            inspect.signature(fn).parameters["objective"].annotation,
+            inspect.signature(fn).return_annotation,
+        )
+        for fn in goal_methods
+    } == {
+        fn: (["self", "objective"], "str", return_type) for fn, return_type in goal_methods.items()
+    }
+    assert {fn: "goal" in inspect.signature(fn).parameters for fn in ordinary_methods} == (
+        dict.fromkeys(ordinary_methods, False)
+    )
+
+
 def test_root_exports_approval_mode() -> None:
     """The root package should expose the high-level approval mode enum."""
     assert [(mode.name, mode.value) for mode in ApprovalMode] == [
@@ -228,6 +253,10 @@ def test_curated_public_api_has_builtin_help_documentation() -> None:
         "thread_resume": Codex.thread_resume,
         "thread_run": Thread.run,
         "thread_turn": Thread.turn,
+        "thread_run_goal": Thread.run_goal,
+        "thread_start_goal": Thread.start_goal,
+        "async_thread_run_goal": AsyncThread.run_goal,
+        "async_thread_start_goal": AsyncThread.start_goal,
     }
 
     assert {name: inspect.getdoc(value) is not None for name, value in documented.items()} == (
