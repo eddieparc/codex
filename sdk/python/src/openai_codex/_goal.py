@@ -64,10 +64,16 @@ class _GoalOperationState:
     _notifications: queue.Queue[Notification | BaseException] = field(default_factory=queue.Queue)
     _failure: BaseException | None = None
     _finished: bool = False
+    _turn_routing_active: bool = False
 
-    def observe(self, notification: Notification) -> None:
+    def observe(self, notification: Notification) -> bool:
         payload = notification.payload
         with self._condition:
+            if not self._turn_routing_active and not isinstance(
+                payload,
+                ThreadGoalClearedNotification | ThreadGoalUpdatedNotification,
+            ):
+                return False
             if isinstance(payload, TurnStartedNotification):
                 if self.logical_turn_id is None:
                     self.logical_turn_id = payload.turn.id
@@ -96,6 +102,12 @@ class _GoalOperationState:
                 self._finished = True
             self._condition.notify_all()
         self._notifications.put(notification)
+        return True
+
+    def activate_turn_routing(self) -> None:
+        """Accept physical turns after the previous stored goal is cleared."""
+        with self._condition:
+            self._turn_routing_active = True
 
     def wait_for_start(self, timeout: float) -> str | None:
         """Wait for the runtime-generated first turn without consuming its event."""

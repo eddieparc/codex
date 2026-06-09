@@ -121,10 +121,20 @@ class MessageRouter:
     def register_goal(self, thread_id: str) -> _GoalOperationState:
         """Register one thread-scoped logical goal operation before it starts."""
         state = _GoalOperationState(thread_id=thread_id)
+        state.activate_turn_routing()
+        return self._register_goal(state)
+
+    def reserve_goal(self, thread_id: str) -> _GoalOperationState:
+        """Reserve a thread route without accepting physical turns yet."""
+        return self._register_goal(_GoalOperationState(thread_id=thread_id))
+
+    def _register_goal(self, state: _GoalOperationState) -> _GoalOperationState:
         with self._lock:
-            if thread_id in self._goal_operations:
-                raise RuntimeError(f"thread {thread_id!r} already has an active goal operation")
-            self._goal_operations[thread_id] = state
+            if state.thread_id in self._goal_operations:
+                raise RuntimeError(
+                    f"thread {state.thread_id!r} already has an active goal operation"
+                )
+            self._goal_operations[state.thread_id] = state
         return state
 
     def unregister_goal(self, state: _GoalOperationState) -> None:
@@ -181,10 +191,10 @@ class MessageRouter:
             if goal_state is not None and (
                 turn_id is not None or notification.method.startswith("thread/goal/")
             ):
-                goal_state.observe(notification)
-                if goal_state.is_finished():
-                    self.unregister_goal(goal_state)
-                return
+                if goal_state.observe(notification):
+                    if goal_state.is_finished():
+                        self.unregister_goal(goal_state)
+                    return
         if turn_id is None:
             self._global_notifications.put(notification)
             return
