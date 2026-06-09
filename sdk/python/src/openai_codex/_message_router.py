@@ -143,6 +143,11 @@ class MessageRouter:
             if self._goal_operations.get(state.thread_id) is state:
                 self._goal_operations.pop(state.thread_id)
 
+    def has_goal(self, thread_id: str) -> bool:
+        """Return whether a logical goal operation owns this thread route."""
+        with self._lock:
+            return thread_id in self._goal_operations
+
     def route_response(self, msg: dict[str, JsonValue]) -> None:
         """Deliver a JSON-RPC response or error to its request waiter."""
 
