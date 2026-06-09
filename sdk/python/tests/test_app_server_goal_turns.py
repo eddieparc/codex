@@ -20,7 +20,6 @@ from app_server_helpers import (
 )
 
 from openai_codex import AsyncCodex, Codex
-from openai_codex._goal import _GoalOperationState
 from openai_codex.errors import InvalidRequestError, TransportClosedError
 from openai_codex.generated.notification_registry import notification_turn_id
 from openai_codex.generated.v2_all import (
@@ -470,8 +469,8 @@ def test_goal_interrupt_pauses_continuation_and_leaves_thread_usable(tmp_path) -
     }
 
 
-def test_cancel_goal_retries_the_server_reported_active_turn(tmp_path) -> None:
-    """Cancellation should survive notification lag while a continuation rolls over."""
+def test_goal_interrupt_retries_the_server_reported_rollover_turn(tmp_path) -> None:
+    """Public interruption should survive notification lag during rollover."""
     with AppServerHarness(tmp_path, enable_goals=True) as harness:
         _enqueue_interruptible_goal(
             harness,
@@ -486,11 +485,13 @@ def test_cancel_goal_retries_the_server_reported_active_turn(tmp_path) -> None:
             turn = thread.start_goal("Cancel while continuation routing catches up")
             harness.responses.wait_for_requests(2)
 
-            stale_state = _GoalOperationState(
-                thread_id=thread.id,
-                current_turn_id=turn.id,
-            )
-            codex._client.cancel_goal_operation(stale_state)
+            goal_state = turn._goal
+            assert goal_state is not None
+            with goal_state._condition:
+                assert goal_state.completed_turn is not None
+                goal_state.current_turn_id = None
+
+            interrupt = turn.interrupt()
             interrupted = turn.run()
             follow_up = thread.run("Continue after rollover cancellation")
             requests = harness.responses.wait_for_requests(3)
@@ -501,11 +502,13 @@ def test_cancel_goal_retries_the_server_reported_active_turn(tmp_path) -> None:
             ).goal
 
     assert {
+        "interrupt": interrupt.model_dump(by_alias=True, mode="json"),
         "goal_status": persisted.status if persisted else None,
         "interrupted": (interrupted.id, interrupted.status),
         "follow_up": (follow_up.status, follow_up.final_response),
         "request_count": len(requests),
     } == {
+        "interrupt": {},
         "goal_status": ThreadGoalStatus.paused,
         "interrupted": (turn.id, TurnStatus.interrupted),
         "follow_up": (TurnStatus.completed, "Rollover follow-up complete."),
