@@ -1,9 +1,7 @@
 import _thread
 import asyncio
-import faulthandler
 import threading
 import time
-from collections.abc import Iterator
 
 import pytest
 from app_server_harness import (
@@ -32,13 +30,6 @@ from openai_codex.generated.v2_all import (
     TurnCompletedNotification,
     TurnStatus,
 )
-
-
-@pytest.fixture(autouse=True)
-def dump_hanging_goal_test() -> Iterator[None]:
-    faulthandler.dump_traceback_later(30, exit=True)
-    yield
-    faulthandler.cancel_dump_traceback_later()
 
 
 def _enqueue_completed_goal(
@@ -543,7 +534,7 @@ def test_goal_interrupt_retries_the_server_reported_rollover_turn(tmp_path) -> N
                     if remaining <= 0:
                         raise AssertionError("continuation turn was not routed")
                     goal_state._condition.wait(remaining)
-                goal_state.current_turn_id = None
+                goal_state.current_turn_id = turn.id
 
             interrupt = turn.interrupt()
             interrupted = turn.run()
