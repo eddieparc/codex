@@ -774,7 +774,7 @@ def test_failed_goal_starts_release_routing_without_model_requests(tmp_path) -> 
                 thread.start_goal("   ")
             with pytest.raises(TypeError) as type_error:
                 thread.start_goal(123)  # type: ignore[arg-type]
-            with pytest.raises(ValueError) as long_error:
+            with pytest.raises(InvalidRequestError) as long_error:
                 thread.start_goal("x" * 4_001)
 
             ephemeral = codex.thread_start(ephemeral=True)
@@ -789,7 +789,7 @@ def test_failed_goal_starts_release_routing_without_model_requests(tmp_path) -> 
         "errors": [
             str(empty_error.value),
             str(type_error.value),
-            str(long_error.value),
+            long_error.value.message,
             ephemeral_error.value.message,
         ],
         "follow_up": (follow_up.status, follow_up.final_response),
