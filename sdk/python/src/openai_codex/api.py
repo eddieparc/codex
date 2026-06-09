@@ -821,11 +821,13 @@ class TurnHandle:
                     if next_turn_id is None or next_turn_id == turn_id:
                         return TurnInterruptResponse()
                     try:
-                        return self._client.turn_interrupt(self.thread_id, next_turn_id)
+                        response = self._client.turn_interrupt(self.thread_id, next_turn_id)
                     except InvalidRequestError as retry_exc:
                         if retry_exc.message == "no active turn to interrupt":
                             return TurnInterruptResponse()
                         raise
+                    self._goal.resolve_active_turn(turn_id, next_turn_id)
+                    return response
                 raise
         return self._client.turn_interrupt(self.thread_id, self.id)
 
@@ -942,7 +944,7 @@ class AsyncTurnHandle:
                     if next_turn_id is None or next_turn_id == turn_id:
                         return TurnInterruptResponse()
                     try:
-                        return await self._codex._client.turn_interrupt(
+                        response = await self._codex._client.turn_interrupt(
                             self.thread_id,
                             next_turn_id,
                         )
@@ -950,6 +952,8 @@ class AsyncTurnHandle:
                         if retry_exc.message == "no active turn to interrupt":
                             return TurnInterruptResponse()
                         raise
+                    self._goal.resolve_active_turn(turn_id, next_turn_id)
+                    return response
                 raise
         return await self._codex._client.turn_interrupt(self.thread_id, self.id)
 
