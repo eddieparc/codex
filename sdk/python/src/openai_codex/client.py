@@ -4,10 +4,12 @@ import re
 import subprocess
 import threading
 import uuid
+from _thread import LockType
 from collections import deque
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, ContextManager, Iterator, TypeVar
+from typing import Callable, Iterator, TypeVar
 
 from pydantic import BaseModel
 
@@ -64,6 +66,12 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 ApprovalHandler = Callable[[str, JsonObject | None], JsonObject]
 RUNTIME_PKG_NAME = "openai-codex-cli-bin"
 _GOAL_START_TIMEOUT_S = 30.0
+
+
+@dataclass(slots=True)
+class _ThreadStartLock:
+    lock: LockType = field(default_factory=threading.Lock)
+    users: int = 0
 
 
 def _active_turn_id_from_error(exc: InvalidRequestError) -> str | None:
@@ -214,7 +222,7 @@ class CodexClient:
         self._proc: subprocess.Popen[str] | None = None
         self._lock = threading.Lock()
         self._thread_start_locks_guard = threading.Lock()
-        self._thread_start_locks: dict[str, ContextManager[None]] = {}
+        self._thread_start_locks: dict[str, _ThreadStartLock] = {}
         self._router = MessageRouter()
         self._stderr_lines: deque[str] = deque(maxlen=400)
         self._stderr_thread: threading.Thread | None = None
@@ -513,15 +521,6 @@ class CodexClient:
         """Pause the active goal used by a logical goal turn."""
         return self.thread_goal_set(thread_id, status=ThreadGoalStatus.paused)
 
-    def finish_failed_goal(
-        self,
-        state: _GoalOperationState,
-        status: ThreadGoalStatus,
-    ) -> None:
-        """Persist the terminal status for a failed physical goal turn."""
-        self.thread_goal_set(state.thread_id, status=status)
-        self._interrupt_goal_operation(state)
-
     def cancel_goal_operation(self, state: _GoalOperationState) -> None:
         """Best-effort cleanup after a logical goal operation is cancelled."""
         try:
@@ -622,13 +621,22 @@ class CodexClient:
             self.register_turn_notifications(started.turn.id)
             return started
 
-    def _thread_start_lock(self, thread_id: str) -> ContextManager[None]:
+    @contextmanager
+    def _thread_start_lock(self, thread_id: str) -> Iterator[None]:
         with self._thread_start_locks_guard:
-            lock = self._thread_start_locks.get(thread_id)
-            if lock is None:
-                lock = threading.Lock()
-                self._thread_start_locks[thread_id] = lock
-            return lock
+            entry = self._thread_start_locks.get(thread_id)
+            if entry is None:
+                entry = _ThreadStartLock()
+                self._thread_start_locks[thread_id] = entry
+            entry.users += 1
+        try:
+            with entry.lock:
+                yield
+        finally:
+            with self._thread_start_locks_guard:
+                entry.users -= 1
+                if entry.users == 0:
+                    self._thread_start_locks.pop(thread_id, None)
 
     def turn_interrupt(self, thread_id: str, turn_id: str) -> TurnInterruptResponse:
         return self.request(

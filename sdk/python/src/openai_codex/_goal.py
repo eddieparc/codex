@@ -8,14 +8,9 @@ from typing import AsyncIterator, Awaitable, Callable, Iterator
 
 from .generated.notification_registry import notification_turn_id
 from .generated.v2_all import (
-    CodexErrorInfoValue,
-    ItemCompletedNotification,
     ThreadGoalClearedNotification,
     ThreadGoalStatus,
     ThreadGoalUpdatedNotification,
-    ThreadItem,
-    ThreadTokenUsage,
-    ThreadTokenUsageUpdatedNotification,
     Turn,
     TurnCompletedNotification,
     TurnStartedNotification,
@@ -38,13 +33,6 @@ def _terminal_goal_status(status: ThreadGoalStatus | None) -> bool:
     }
 
 
-def _failed_goal_status(turn: Turn) -> ThreadGoalStatus:
-    error_info = turn.error.codex_error_info if turn.error is not None else None
-    if error_info is not None and error_info.root == CodexErrorInfoValue.usage_limit_exceeded:
-        return ThreadGoalStatus.usage_limited
-    return ThreadGoalStatus.blocked
-
-
 @dataclass(slots=True)
 class _GoalOperationState:
     """Private state for one goal operation exposed as a logical turn."""
@@ -55,8 +43,6 @@ class _GoalOperationState:
     status: ThreadGoalStatus | None = None
     started_turn: Turn | None = None
     completed_turn: Turn | None = None
-    items: list[ThreadItem] = field(default_factory=list)
-    usage: ThreadTokenUsage | None = None
     interrupted: bool = False
     interrupt_requested: bool = False
     cleared: bool = False
@@ -90,10 +76,6 @@ class _GoalOperationState:
                     self.cleared = False
             elif isinstance(payload, ThreadGoalClearedNotification):
                 self.cleared = True
-            elif isinstance(payload, ItemCompletedNotification):
-                self.items.append(payload.item)
-            elif isinstance(payload, ThreadTokenUsageUpdatedNotification):
-                self.usage = payload.token_usage
             if (
                 self.current_turn_id is None
                 and self.completed_turn is not None
@@ -156,16 +138,18 @@ class _GoalOperationState:
         with self._condition:
             self.interrupted = True
             self.interrupt_requested = False
+            self._condition.notify_all()
 
     def cancel_interrupt(self) -> None:
         with self._condition:
             self.interrupt_requested = False
+            self._condition.notify_all()
 
-    def explicit_interrupt(self, status: ThreadGoalStatus | None) -> bool:
+    def explicit_interrupt(self) -> bool:
         with self._condition:
-            return self.interrupted or (
-                self.interrupt_requested and status == ThreadGoalStatus.paused
-            )
+            while self.interrupt_requested:
+                self._condition.wait()
+            return self.interrupted
 
     def active_turn(self, *, after: str | None = None) -> str | None:
         """Wait for the current turn, or return None once the goal has ended."""
@@ -360,7 +344,7 @@ class _GoalStreamCursor:
                 payload,
                 logical_turn_id=logical_turn_id,
                 started=self.started,
-                interrupted=self.state.explicit_interrupt(self.status),
+                interrupted=self.state.explicit_interrupt(),
             ),
         )
 
@@ -373,7 +357,6 @@ class _GoalNotificationStream(Iterator[Notification]):
     next_notification: Callable[[], Notification]
     unregister: Callable[[], None]
     cancel_goal: Callable[[], None]
-    finish_failed_goal: Callable[[ThreadGoalStatus], None]
     _cursor: _GoalStreamCursor = field(init=False)
     _pending: deque[Notification] = field(default_factory=deque)
     _closed: bool = False
@@ -391,13 +374,6 @@ class _GoalNotificationStream(Iterator[Notification]):
             while not self._pending:
                 notification = self.next_notification()
                 events, completed = self._cursor.process(notification)
-                payload = notification.payload
-                if (
-                    not completed
-                    and isinstance(payload, TurnCompletedNotification)
-                    and payload.turn.status == TurnStatus.failed
-                ):
-                    self.finish_failed_goal(_failed_goal_status(payload.turn))
                 self._pending.extend(events)
                 if completed:
                     self._finish()
@@ -433,7 +409,6 @@ class _AsyncGoalNotificationStream(AsyncIterator[Notification]):
     next_notification: Callable[[], Awaitable[Notification]]
     unregister: Callable[[], None]
     cancel_goal: Callable[[], Awaitable[None]]
-    finish_failed_goal: Callable[[ThreadGoalStatus], Awaitable[None]]
     _cursor: _GoalStreamCursor = field(init=False)
     _pending: deque[Notification] = field(default_factory=deque)
     _closed: bool = False
@@ -451,13 +426,6 @@ class _AsyncGoalNotificationStream(AsyncIterator[Notification]):
             while not self._pending:
                 notification = await self.next_notification()
                 events, completed = self._cursor.process(notification)
-                payload = notification.payload
-                if (
-                    not completed
-                    and isinstance(payload, TurnCompletedNotification)
-                    and payload.turn.status == TurnStatus.failed
-                ):
-                    await self.finish_failed_goal(_failed_goal_status(payload.turn))
                 self._pending.extend(events)
                 if completed:
                     self._finish()
