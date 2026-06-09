@@ -166,7 +166,11 @@ pub async fn dismiss_version(config: &Config, version: &str) -> anyhow::Result<(
     let version_file = version_filepath(config);
     let mut info = match read_version_info(&version_file) {
         Ok(info) => info,
-        Err(_) => return Ok(()),
+        Err(_) => VersionInfo {
+            latest_version: version.to_string(),
+            last_checked_at: Utc::now(),
+            dismissed_version: None,
+        },
     };
     info.dismissed_version = Some(version.to_string());
     let json_line = format!("{}\n", serde_json::to_string(&info)?);
@@ -175,4 +179,37 @@ pub async fn dismiss_version(config: &Config, version: &str) -> anyhow::Result<(
     }
     tokio::fs::write(version_file, json_line).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::legacy_core::config::ConfigBuilder;
+    use std::path::Path;
+    use tempfile::tempdir;
+
+    async fn test_config(codex_home: &Path) -> Config {
+        ConfigBuilder::default()
+            .codex_home(codex_home.to_path_buf())
+            .build()
+            .await
+            .expect("load config")
+    }
+
+    #[tokio::test]
+    async fn dismiss_version_creates_cache_file_when_missing() {
+        let codex_home = tempdir().expect("temp codex home");
+        let config = test_config(codex_home.path()).await;
+        let version_file = version_filepath(&config);
+
+        assert!(!version_file.exists());
+
+        dismiss_version(&config, "999.0.0")
+            .await
+            .expect("dismiss version");
+
+        let info = read_version_info(&version_file).expect("read version info");
+        assert_eq!(info.latest_version, "999.0.0");
+        assert_eq!(info.dismissed_version.as_deref(), Some("999.0.0"));
+    }
 }
