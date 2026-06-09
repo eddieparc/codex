@@ -943,7 +943,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
         /*beta_features_header*/ None,
         /*attestation_provider*/ None,
     );
-    let request_metadata = client.request_metadata(/*turn_id*/ None);
+    let request_identity = client.request_identity(/*turn_id*/ None);
     let mut client_session = client.new_session();
     let mut prompt = Prompt::default();
     prompt.input.push(ResponseItem::Message {
@@ -963,7 +963,7 @@ async fn send_provider_auth_request(server: &MockServer, auth: ModelProviderAuth
             effort,
             summary.unwrap_or(ReasoningSummary::Auto),
             /*service_tier*/ None,
-            &request_metadata,
+            &request_identity,
             /*turn_metadata_header*/ None,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )
@@ -2438,7 +2438,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
         /*beta_features_header*/ None,
         /*attestation_provider*/ None,
     );
-    let request_metadata = client.request_metadata(/*turn_id*/ None);
+    let request_identity = client.request_identity(/*turn_id*/ None);
     let mut client_session = client.new_session();
 
     let mut prompt = Prompt::default();
@@ -2512,7 +2512,7 @@ async fn azure_responses_request_includes_store_and_reasoning_ids() {
             effort,
             summary.unwrap_or(ReasoningSummary::Auto),
             /*service_tier*/ None,
-            &request_metadata,
+            &request_identity,
             /*turn_metadata_header*/ None,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )

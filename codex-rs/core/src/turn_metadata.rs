@@ -16,7 +16,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::task::JoinHandle;
 
-use crate::request_metadata::CodexRequestMetadata;
+use crate::request_identity::CodexRequestIdentity;
 use crate::sandbox_tags::permission_profile_sandbox_tag;
 use codex_git_utils::get_git_remote_urls_assume_git_repo;
 use codex_git_utils::get_git_repo_root;
@@ -385,7 +385,7 @@ impl TurnMetadataState {
 
     fn current_header_value_for_model_request_kind(
         &self,
-        request_metadata: &CodexRequestMetadata,
+        request_identity: &CodexRequestIdentity,
         request_kind: TurnMetadataRequestKind,
     ) -> Option<String> {
         let header = self.current_header_value()?;
@@ -394,37 +394,37 @@ impl TurnMetadataState {
             REQUEST_KIND_KEY.to_string(),
             serde_json::to_value(request_kind).ok()?,
         );
-        request_metadata.insert_turn_metadata_fields(&mut metadata);
+        request_identity.insert_turn_metadata_fields(&mut metadata);
         to_ascii_json_string(&metadata).ok()
     }
 
     pub(crate) fn current_header_value_for_model_request(
         &self,
-        request_metadata: &CodexRequestMetadata,
+        request_identity: &CodexRequestIdentity,
     ) -> Option<String> {
         self.current_header_value_for_model_request_kind(
-            request_metadata,
+            request_identity,
             TurnMetadataRequestKind::Turn,
         )
     }
 
     pub(crate) fn current_header_value_for_prewarm(
         &self,
-        request_metadata: &CodexRequestMetadata,
+        request_identity: &CodexRequestIdentity,
     ) -> Option<String> {
         self.current_header_value_for_model_request_kind(
-            request_metadata,
+            request_identity,
             TurnMetadataRequestKind::Prewarm,
         )
     }
 
     pub(crate) fn current_header_value_for_compaction(
         &self,
-        request_metadata: &CodexRequestMetadata,
+        request_identity: &CodexRequestIdentity,
         compaction: CompactionTurnMetadata,
     ) -> Option<String> {
         let header = self.current_header_value_for_model_request_kind(
-            request_metadata,
+            request_identity,
             TurnMetadataRequestKind::Compaction,
         )?;
         let mut metadata = serde_json::from_str::<serde_json::Map<String, Value>>(&header).ok()?;

@@ -292,9 +292,9 @@ fn build_ws_client_metadata_includes_window_lineage_and_turn_metadata() {
 
     client.advance_window_generation();
 
-    let request_metadata = client.request_metadata(Some("turn-123"));
+    let request_identity = client.request_identity(Some("turn-123"));
     let client_metadata = client.build_ws_client_metadata(
-        &request_metadata,
+        &request_identity,
         Some(r#"{"turn_id":"turn-123"}"#),
         /*use_responses_lite*/ false,
     );
@@ -547,11 +547,11 @@ fn model_client_with_counting_attestation(
 async fn websocket_handshake_includes_attestation_for_chatgpt_codex_responses() {
     let (model_client, attestation_calls) =
         model_client_with_counting_attestation(/*include_attestation*/ true);
-    let request_metadata = model_client.request_metadata(/*turn_id*/ None);
+    let request_identity = model_client.request_identity(/*turn_id*/ None);
 
     let headers = model_client
         .build_websocket_headers(
-            &request_metadata,
+            &request_identity,
             /*turn_state*/ None,
             /*turn_metadata_header*/ None,
         )

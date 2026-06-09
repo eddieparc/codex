@@ -17,7 +17,7 @@ use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
 use crate::hook_runtime::run_pre_compact_hooks;
-use crate::request_metadata::CodexRequestMetadata;
+use crate::request_identity::CodexRequestIdentity;
 use crate::responses_retry::ResponsesStreamRequest;
 use crate::responses_retry::handle_retryable_response_stream_error;
 use crate::session::session::Session;
@@ -244,13 +244,13 @@ async fn run_remote_compact_task_inner_impl(
         output_schema_strict: true,
     };
 
-    let request_metadata = sess
+    let request_identity = sess
         .services
         .model_client
-        .request_metadata(Some(&turn_context.sub_id));
+        .request_identity(Some(&turn_context.sub_id));
     let turn_metadata_header = turn_context
         .turn_metadata_state
-        .current_header_value_for_compaction(&request_metadata, compaction_metadata);
+        .current_header_value_for_compaction(&request_identity, compaction_metadata);
     let trace_attempt = compaction_trace.start_attempt(&serde_json::json!({
         "model": turn_context.model_info.slug.as_str(),
         "instructions": prompt.base_instructions.text.as_str(),
@@ -271,7 +271,7 @@ async fn run_remote_compact_task_inner_impl(
         turn_context,
         client_session,
         &prompt,
-        &request_metadata,
+        &request_identity,
         turn_metadata_header.as_deref(),
     )
     .await;
@@ -331,7 +331,7 @@ async fn run_remote_compaction_request_v2(
     turn_context: &TurnContext,
     client_session: &mut ModelClientSession,
     prompt: &Prompt,
-    request_metadata: &CodexRequestMetadata,
+    request_identity: &CodexRequestIdentity,
     turn_metadata_header: Option<&str>,
 ) -> CodexResult<RemoteCompactionV2Output> {
     let max_retries = turn_context
@@ -349,7 +349,7 @@ async fn run_remote_compaction_request_v2(
                 turn_context.reasoning_effort.clone(),
                 turn_context.reasoning_summary,
                 turn_context.config.service_tier.clone(),
-                request_metadata,
+                request_identity,
                 turn_metadata_header,
                 &InferenceTraceContext::disabled(),
             )

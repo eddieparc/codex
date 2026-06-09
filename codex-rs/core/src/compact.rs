@@ -8,7 +8,7 @@ use crate::hook_runtime::PostCompactHookOutcome;
 use crate::hook_runtime::PreCompactHookOutcome;
 use crate::hook_runtime::run_post_compact_hooks;
 use crate::hook_runtime::run_pre_compact_hooks;
-use crate::request_metadata::CodexRequestMetadata;
+use crate::request_identity::CodexRequestIdentity;
 #[cfg(test)]
 use crate::session::PreviousTurnSettings;
 use crate::session::session::Session;
@@ -229,18 +229,18 @@ async fn run_compact_task_inner_impl(
             personality: turn_context.personality,
             ..Default::default()
         };
-        let request_metadata = sess
+        let request_identity = sess
             .services
             .model_client
-            .request_metadata(Some(&turn_context.sub_id));
+            .request_identity(Some(&turn_context.sub_id));
         let turn_metadata_header = turn_context
             .turn_metadata_state
-            .current_header_value_for_compaction(&request_metadata, compaction_metadata);
+            .current_header_value_for_compaction(&request_identity, compaction_metadata);
         let attempt_result = drain_to_completed(
             &sess,
             turn_context.as_ref(),
             &mut client_session,
-            &request_metadata,
+            &request_identity,
             turn_metadata_header.as_deref(),
             &prompt,
         )
@@ -584,7 +584,7 @@ async fn drain_to_completed(
     sess: &Session,
     turn_context: &TurnContext,
     client_session: &mut ModelClientSession,
-    request_metadata: &CodexRequestMetadata,
+    request_identity: &CodexRequestIdentity,
     turn_metadata_header: Option<&str>,
     prompt: &Prompt,
 ) -> CodexResult<()> {
@@ -596,7 +596,7 @@ async fn drain_to_completed(
             turn_context.reasoning_effort.clone(),
             turn_context.reasoning_summary,
             turn_context.config.service_tier.clone(),
-            request_metadata,
+            request_identity,
             turn_metadata_header,
             // Rollout tracing currently models remote compaction only; local compaction streams
             // are left untraced until the reducer has a first-class local compaction lifecycle.

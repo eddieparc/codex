@@ -14,7 +14,7 @@ const WINDOW_ID_KEY: &str = "window_id";
 
 /// Canonical Codex request identity shared by Responses HTTP and websocket transports.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CodexRequestMetadata {
+pub struct CodexRequestIdentity {
     pub(crate) installation_id: String,
     pub(crate) session_id: String,
     pub(crate) thread_id: String,
@@ -22,7 +22,7 @@ pub struct CodexRequestMetadata {
     pub(crate) window_id: String,
 }
 
-impl CodexRequestMetadata {
+impl CodexRequestIdentity {
     pub(crate) fn new(
         installation_id: String,
         session_id: String,

@@ -35,7 +35,7 @@ use crate::mentions::collect_explicit_app_ids;
 use crate::mentions::collect_explicit_plugin_mentions;
 use crate::mentions::collect_tool_mentions_from_messages;
 use crate::plugins::build_plugin_injections;
-use crate::request_metadata::CodexRequestMetadata;
+use crate::request_identity::CodexRequestIdentity;
 use crate::responses_retry::ResponsesStreamRequest;
 use crate::responses_retry::handle_retryable_response_stream_error;
 use crate::session::PreviousTurnSettings;
@@ -221,20 +221,20 @@ pub(crate) async fn run_turn(
                 .for_prompt(&turn_context.model_info.input_modalities)
         };
 
-        let request_metadata = sess
+        let request_identity = sess
             .services
             .model_client
-            .request_metadata(Some(&turn_context.sub_id));
+            .request_identity(Some(&turn_context.sub_id));
         let turn_metadata_header = turn_context
             .turn_metadata_state
-            .current_header_value_for_model_request(&request_metadata);
+            .current_header_value_for_model_request(&request_identity);
         match run_sampling_request(
             Arc::clone(&sess),
             Arc::clone(&turn_context),
             Arc::clone(&turn_extension_data),
             Arc::clone(&turn_diff_tracker),
             &mut client_session,
-            &request_metadata,
+            &request_identity,
             turn_metadata_header.as_deref(),
             sampling_request_input.clone(),
             cancellation_token.child_token(),
@@ -982,7 +982,7 @@ async fn run_sampling_request(
     turn_store: Arc<codex_extension_api::ExtensionData>,
     turn_diff_tracker: SharedTurnDiffTracker,
     client_session: &mut ModelClientSession,
-    request_metadata: &CodexRequestMetadata,
+    request_identity: &CodexRequestIdentity,
     turn_metadata_header: Option<&str>,
     input: Vec<ResponseItem>,
     cancellation_token: CancellationToken,
@@ -1026,7 +1026,7 @@ async fn run_sampling_request(
             Arc::clone(&turn_context),
             Arc::clone(&turn_store),
             client_session,
-            request_metadata,
+            request_identity,
             turn_metadata_header,
             Arc::clone(&turn_diff_tracker),
             &prompt,
@@ -1760,7 +1760,7 @@ async fn try_run_sampling_request(
     turn_context: Arc<TurnContext>,
     turn_store: Arc<codex_extension_api::ExtensionData>,
     client_session: &mut ModelClientSession,
-    request_metadata: &CodexRequestMetadata,
+    request_identity: &CodexRequestIdentity,
     turn_metadata_header: Option<&str>,
     turn_diff_tracker: SharedTurnDiffTracker,
     prompt: &Prompt,
@@ -1788,7 +1788,7 @@ async fn try_run_sampling_request(
             turn_context.reasoning_effort.clone(),
             turn_context.reasoning_summary,
             turn_context.config.service_tier.clone(),
-            request_metadata,
+            request_identity,
             turn_metadata_header,
             &inference_trace,
         )

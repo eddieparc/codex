@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::request_metadata::CodexRequestMetadata;
+use crate::request_identity::CodexRequestIdentity;
 use crate::sandbox_tags::permission_profile_sandbox_tag;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -24,8 +24,8 @@ fn test_mcp_turn_metadata_context() -> McpTurnMetadataContext<'static> {
     }
 }
 
-fn test_request_metadata(window_id: &str) -> CodexRequestMetadata {
-    CodexRequestMetadata::new(
+fn test_request_identity(window_id: &str) -> CodexRequestIdentity {
+    CodexRequestIdentity::new(
         "installation-a".to_string(),
         "session-a".to_string(),
         "thread-a".to_string(),
@@ -616,7 +616,7 @@ fn turn_metadata_state_merges_client_metadata_without_replacing_reserved_fields(
     );
 
     let model_request_header = state
-        .current_header_value_for_model_request(&test_request_metadata("thread-a:1"))
+        .current_header_value_for_model_request(&test_request_identity("thread-a:1"))
         .expect("model request header");
     let model_request_json: Value =
         serde_json::from_str(&model_request_header).expect("model request json");
@@ -660,7 +660,7 @@ fn turn_metadata_state_overlays_compaction_only_on_compaction_requests() {
 
     let compact_header = state
         .current_header_value_for_compaction(
-            &test_request_metadata("thread-a:2"),
+            &test_request_identity("thread-a:2"),
             CompactionTurnMetadata::new(
                 CompactionTrigger::Auto,
                 CompactionReason::ContextLimit,
@@ -685,7 +685,7 @@ fn turn_metadata_state_overlays_compaction_only_on_compaction_requests() {
     );
 
     let regular_header = state
-        .current_header_value_for_model_request(&test_request_metadata("thread-a:3"))
+        .current_header_value_for_model_request(&test_request_identity("thread-a:3"))
         .expect("regular header");
     let regular_json: Value = serde_json::from_str(&regular_header).expect("json");
     assert_eq!(regular_json["request_kind"].as_str(), Some("turn"));

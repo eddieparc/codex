@@ -260,13 +260,13 @@ async fn schedule_startup_prewarm_inner(
         build_prompt_started_at.elapsed(),
         /*status*/ None,
     );
-    let request_metadata = session
+    let request_identity = session
         .services
         .model_client
-        .request_metadata(Some(&startup_turn_context.sub_id));
+        .request_identity(Some(&startup_turn_context.sub_id));
     let startup_turn_metadata_header = startup_turn_context
         .turn_metadata_state
-        .current_header_value_for_prewarm(&request_metadata);
+        .current_header_value_for_prewarm(&request_identity);
     let mut client_session = session.services.model_client.new_session();
     let websocket_warmup_started_at = Instant::now();
     client_session
@@ -277,7 +277,7 @@ async fn schedule_startup_prewarm_inner(
             startup_turn_context.reasoning_effort.clone(),
             startup_turn_context.reasoning_summary,
             startup_turn_context.config.service_tier.clone(),
-            &request_metadata,
+            &request_identity,
             startup_turn_metadata_header.as_deref(),
         )
         .await?;
