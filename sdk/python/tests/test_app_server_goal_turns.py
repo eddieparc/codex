@@ -433,6 +433,46 @@ def test_goal_steer_targets_an_active_continuation(tmp_path) -> None:
     }
 
 
+def test_goal_steer_retries_the_server_reported_rollover_turn(tmp_path) -> None:
+    """Steering should recover when routed state trails the server continuation."""
+    with AppServerHarness(tmp_path, enable_goals=True) as harness:
+        _enqueue_steerable_goal(
+            harness,
+            "steer-rollover",
+            initial_text="Initial rollover work complete.",
+            continuation_chunks=["rollover ", "work"],
+            final_text="Rollover steering complete.",
+        )
+
+        with Codex(config=harness.app_server_config()) as codex:
+            turn = codex.thread_start().start_goal("Steer while routing catches up")
+            harness.responses.wait_for_requests(2)
+            goal_state = turn._goal
+            assert goal_state is not None
+            deadline = time.monotonic() + 5
+            with goal_state._condition:
+                while goal_state.current_turn_id in {None, turn.id}:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise AssertionError("continuation turn was not routed")
+                    goal_state._condition.wait(remaining)
+                goal_state.current_turn_id = turn.id
+
+            steer = turn.steer("Steer through the rollover window.")
+            result = turn.run()
+            requests = harness.responses.wait_for_requests(4)
+
+    assert {
+        "steer_id": steer.turn_id,
+        "result": (result.id, result.status, result.final_response),
+        "steering_input": requests[2].message_input_texts("user")[-1:],
+    } == {
+        "steer_id": turn.id,
+        "result": (turn.id, TurnStatus.completed, "Rollover steering complete."),
+        "steering_input": ["Steer through the rollover window."],
+    }
+
+
 def test_goal_interrupt_pauses_continuation_and_leaves_thread_usable(tmp_path) -> None:
     """Interrupt should stop the logical goal operation and permit ordinary follow-up work."""
     with AppServerHarness(tmp_path, enable_goals=True) as harness:
@@ -487,8 +527,13 @@ def test_goal_interrupt_retries_the_server_reported_rollover_turn(tmp_path) -> N
 
             goal_state = turn._goal
             assert goal_state is not None
+            deadline = time.monotonic() + 5
             with goal_state._condition:
-                assert goal_state.completed_turn is not None
+                while goal_state.current_turn_id in {None, turn.id}:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise AssertionError("continuation turn was not routed")
+                    goal_state._condition.wait(remaining)
                 goal_state.current_turn_id = None
 
             interrupt = turn.interrupt()
