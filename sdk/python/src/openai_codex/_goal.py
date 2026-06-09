@@ -174,6 +174,17 @@ class _GoalOperationState:
         with self._condition:
             return self.current_turn_id
 
+    def turn_for_interrupt(self) -> str | None:
+        """Return an active or stale turn id that can resolve rollover races."""
+        with self._condition:
+            if self.current_turn_id is not None:
+                return self.current_turn_id
+            if self.completed_turn is not None:
+                return self.completed_turn.id
+            if self.started_turn is not None:
+                return self.started_turn.id
+            return None
+
     def wake_notification_reader(self) -> None:
         """Release a reader blocked after its stream has been closed."""
         self._notifications.put(_GoalStreamClosed())

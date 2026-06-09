@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import Iterator
+from concurrent.futures import Future
 from typing import AsyncIterator, Callable, ParamSpec, TypeVar
 
 from pydantic import BaseModel
@@ -246,19 +247,26 @@ class AsyncCodexClient:
         objective: str,
     ) -> tuple[_GoalOperationState, str]:
         """Start a logical goal through the wrapped sync client."""
-        operation = asyncio.create_task(
-            asyncio.to_thread(
-                self._sync.start_goal_operation,
-                thread_id,
-                objective,
-            )
+        operation: Future[tuple[_GoalOperationState, str]] = Future()
+
+        def start_operation() -> None:
+            try:
+                operation.set_result(self._sync.start_goal_operation(thread_id, objective))
+            except BaseException as exc:
+                operation.set_exception(exc)
+
+        worker = threading.Thread(
+            target=start_operation,
+            name="codex-goal-start",
+            daemon=True,
         )
+        worker.start()
         try:
-            return await asyncio.shield(operation)
+            return await asyncio.shield(asyncio.wrap_future(operation))
         except asyncio.CancelledError:
 
             def cleanup_cancelled_start(
-                completed: asyncio.Task[tuple[_GoalOperationState, str]],
+                completed: Future[tuple[_GoalOperationState, str]],
             ) -> None:
                 try:
                     state, _ = completed.result()
