@@ -94,7 +94,7 @@ def _continuation_text(request) -> str:
 
 def test_sync_goal_run_aggregates_automatic_continuation(tmp_path) -> None:
     """The public result should cover the initial and automatic continuation turns."""
-    with AppServerHarness(tmp_path, enable_goals=True) as harness:
+    with AppServerHarness(tmp_path) as harness:
         _enqueue_completed_goal(
             harness,
             "sync-run",
@@ -152,7 +152,7 @@ def test_sync_goal_run_aggregates_automatic_continuation(tmp_path) -> None:
 
 def test_goal_stream_exposes_one_logical_lifecycle(tmp_path) -> None:
     """Continuation boundaries should not leak through the public stream."""
-    with AppServerHarness(tmp_path, enable_goals=True) as harness:
+    with AppServerHarness(tmp_path) as harness:
         harness.responses.enqueue_sse(
             streaming_response(
                 "stream-initial",
@@ -221,7 +221,7 @@ def test_goal_stream_exposes_one_logical_lifecycle(tmp_path) -> None:
 
 def test_goal_can_complete_within_the_initial_server_turn(tmp_path) -> None:
     """Completing the goal before turn end should not create a continuation turn."""
-    with AppServerHarness(tmp_path, enable_goals=True) as harness:
+    with AppServerHarness(tmp_path) as harness:
         harness.responses.enqueue_sse(
             sse(
                 [
@@ -271,7 +271,7 @@ def test_goal_can_complete_within_the_initial_server_turn(tmp_path) -> None:
 
 def test_goal_replaces_an_existing_persisted_goal(tmp_path) -> None:
     """Goal mode should replace a resumable persisted goal before model work begins."""
-    with AppServerHarness(tmp_path, enable_goals=True) as harness:
+    with AppServerHarness(tmp_path) as harness:
         _enqueue_completed_goal(
             harness,
             "replacement",
@@ -325,7 +325,7 @@ def test_async_goal_run_matches_sync_logical_result(tmp_path) -> None:
     """The async public API should aggregate the same real continuation lifecycle."""
 
     async def scenario() -> None:
-        with AppServerHarness(tmp_path, enable_goals=True) as harness:
+        with AppServerHarness(tmp_path) as harness:
             _enqueue_completed_goal(
                 harness,
                 "async-run",

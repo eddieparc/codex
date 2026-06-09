@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import AsyncIterator, Iterator
 
 from ._approval_mode import (
@@ -638,7 +638,9 @@ class Thread:
         """Activate a persisted goal and return its logical turn handle."""
         objective = _normalize_goal_objective(objective)
         state, turn_id = self._client.start_goal_operation(self.id, objective)
-        return TurnHandle(self._client, self.id, turn_id, _goal=state)
+        handle = TurnHandle(self._client, self.id, turn_id)
+        handle._goal = state
+        return handle
 
     def read(self, *, include_turns: bool = False) -> ThreadReadResponse:
         """Read this thread, optionally including its turn history."""
@@ -743,7 +745,9 @@ class AsyncThread:
         await self._codex._ensure_initialized()
         objective = _normalize_goal_objective(objective)
         state, turn_id = await self._codex._client.start_goal_operation(self.id, objective)
-        return AsyncTurnHandle(self._codex, self.id, turn_id, _goal=state)
+        handle = AsyncTurnHandle(self._codex, self.id, turn_id)
+        handle._goal = state
+        return handle
 
     async def read(self, *, include_turns: bool = False) -> ThreadReadResponse:
         """Read this thread, optionally including its turn history."""
@@ -766,7 +770,12 @@ class TurnHandle:
     _client: CodexClient
     thread_id: str
     id: str
-    _goal: _GoalOperationState | None = None
+    _goal: _GoalOperationState | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def steer(self, input: RunInput) -> TurnSteerResponse:
         """Send additional input to this active turn."""
@@ -788,7 +797,24 @@ class TurnHandle:
                     next_turn_id = self._goal.active_turn(after=turn_id)
                 if next_turn_id is None:
                     raise _inactive_turn_error() from exc
-                response = self._client.turn_steer(self.thread_id, next_turn_id, wire_input)
+                try:
+                    response = self._client.turn_steer(
+                        self.thread_id,
+                        next_turn_id,
+                        wire_input,
+                    )
+                except InvalidRequestError as retry_exc:
+                    if retry_exc.message != "no active turn to steer":
+                        raise
+                    rollover_turn_id = self._goal.active_turn(after=next_turn_id)
+                    if rollover_turn_id is None:
+                        raise _inactive_turn_error() from retry_exc
+                    response = self._client.turn_steer(
+                        self.thread_id,
+                        rollover_turn_id,
+                        wire_input,
+                    )
+                    self._goal.resolve_active_turn(next_turn_id, rollover_turn_id)
                 self._goal.resolve_active_turn(turn_id, next_turn_id)
             return response.model_copy(update={"turn_id": self.id})
         return self._client.turn_steer(
@@ -804,30 +830,38 @@ class TurnHandle:
                 raise _inactive_interrupt_error()
             try:
                 self._client.pause_goal(self.thread_id)
+                turn_id = self._goal.turn_for_interrupt()
+                if turn_id is None:
+                    response = TurnInterruptResponse()
+                else:
+                    try:
+                        response = self._client.turn_interrupt(self.thread_id, turn_id)
+                    except InvalidRequestError as exc:
+                        if exc.message == "no active turn to interrupt":
+                            response = TurnInterruptResponse()
+                        elif exc.message.startswith("expected active turn id"):
+                            next_turn_id = (
+                                _active_turn_id_from_error(exc) or self._goal.current_turn()
+                            )
+                            if next_turn_id is None or next_turn_id == turn_id:
+                                response = TurnInterruptResponse()
+                            else:
+                                try:
+                                    response = self._client.turn_interrupt(
+                                        self.thread_id,
+                                        next_turn_id,
+                                    )
+                                except InvalidRequestError as retry_exc:
+                                    if retry_exc.message != "no active turn to interrupt":
+                                        raise
+                                    response = TurnInterruptResponse()
+                                self._goal.resolve_active_turn(turn_id, next_turn_id)
+                        else:
+                            raise
+                self._goal.confirm_interrupt()
+                return response
             except BaseException:
                 self._goal.cancel_interrupt()
-                raise
-            self._goal.confirm_interrupt()
-            turn_id = self._goal.turn_for_interrupt()
-            if turn_id is None:
-                return TurnInterruptResponse()
-            try:
-                return self._client.turn_interrupt(self.thread_id, turn_id)
-            except InvalidRequestError as exc:
-                if exc.message == "no active turn to interrupt":
-                    return TurnInterruptResponse()
-                if exc.message.startswith("expected active turn id"):
-                    next_turn_id = _active_turn_id_from_error(exc) or self._goal.current_turn()
-                    if next_turn_id is None or next_turn_id == turn_id:
-                        return TurnInterruptResponse()
-                    try:
-                        response = self._client.turn_interrupt(self.thread_id, next_turn_id)
-                    except InvalidRequestError as retry_exc:
-                        if retry_exc.message == "no active turn to interrupt":
-                            return TurnInterruptResponse()
-                        raise
-                    self._goal.resolve_active_turn(turn_id, next_turn_id)
-                    return response
                 raise
         return self._client.turn_interrupt(self.thread_id, self.id)
 
@@ -839,7 +873,6 @@ class TurnHandle:
                 lambda: self._client.next_goal_notification(self._goal),
                 lambda: self._client.unregister_goal_operation(self._goal),
                 lambda: self._client.cancel_goal_operation(self._goal),
-                lambda status: self._client.finish_failed_goal(self._goal, status),
             )
 
         def ordinary_stream() -> Iterator[Notification]:
@@ -879,7 +912,12 @@ class AsyncTurnHandle:
     _codex: AsyncCodex
     thread_id: str
     id: str
-    _goal: _GoalOperationState | None = None
+    _goal: _GoalOperationState | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     async def steer(self, input: RunInput) -> TurnSteerResponse:
         """Send additional input to this active turn."""
@@ -906,11 +944,27 @@ class AsyncTurnHandle:
                     next_turn_id = await asyncio.to_thread(self._goal.active_turn, after=turn_id)
                 if next_turn_id is None:
                     raise _inactive_turn_error() from exc
-                response = await self._codex._client.turn_steer(
-                    self.thread_id,
-                    next_turn_id,
-                    wire_input,
-                )
+                try:
+                    response = await self._codex._client.turn_steer(
+                        self.thread_id,
+                        next_turn_id,
+                        wire_input,
+                    )
+                except InvalidRequestError as retry_exc:
+                    if retry_exc.message != "no active turn to steer":
+                        raise
+                    rollover_turn_id = await asyncio.to_thread(
+                        self._goal.active_turn,
+                        after=next_turn_id,
+                    )
+                    if rollover_turn_id is None:
+                        raise _inactive_turn_error() from retry_exc
+                    response = await self._codex._client.turn_steer(
+                        self.thread_id,
+                        rollover_turn_id,
+                        wire_input,
+                    )
+                    self._goal.resolve_active_turn(next_turn_id, rollover_turn_id)
                 self._goal.resolve_active_turn(turn_id, next_turn_id)
             return response.model_copy(update={"turn_id": self.id})
         return await self._codex._client.turn_steer(
@@ -927,33 +981,41 @@ class AsyncTurnHandle:
                 raise _inactive_interrupt_error()
             try:
                 await self._codex._client.pause_goal(self.thread_id)
-            except BaseException:
-                self._goal.cancel_interrupt()
-                raise
-            self._goal.confirm_interrupt()
-            turn_id = self._goal.turn_for_interrupt()
-            if turn_id is None:
-                return TurnInterruptResponse()
-            try:
-                return await self._codex._client.turn_interrupt(self.thread_id, turn_id)
-            except InvalidRequestError as exc:
-                if exc.message == "no active turn to interrupt":
-                    return TurnInterruptResponse()
-                if exc.message.startswith("expected active turn id"):
-                    next_turn_id = _active_turn_id_from_error(exc) or self._goal.current_turn()
-                    if next_turn_id is None or next_turn_id == turn_id:
-                        return TurnInterruptResponse()
+                turn_id = self._goal.turn_for_interrupt()
+                if turn_id is None:
+                    response = TurnInterruptResponse()
+                else:
                     try:
                         response = await self._codex._client.turn_interrupt(
                             self.thread_id,
-                            next_turn_id,
+                            turn_id,
                         )
-                    except InvalidRequestError as retry_exc:
-                        if retry_exc.message == "no active turn to interrupt":
-                            return TurnInterruptResponse()
-                        raise
-                    self._goal.resolve_active_turn(turn_id, next_turn_id)
-                    return response
+                    except InvalidRequestError as exc:
+                        if exc.message == "no active turn to interrupt":
+                            response = TurnInterruptResponse()
+                        elif exc.message.startswith("expected active turn id"):
+                            next_turn_id = (
+                                _active_turn_id_from_error(exc) or self._goal.current_turn()
+                            )
+                            if next_turn_id is None or next_turn_id == turn_id:
+                                response = TurnInterruptResponse()
+                            else:
+                                try:
+                                    response = await self._codex._client.turn_interrupt(
+                                        self.thread_id,
+                                        next_turn_id,
+                                    )
+                                except InvalidRequestError as retry_exc:
+                                    if retry_exc.message != "no active turn to interrupt":
+                                        raise
+                                    response = TurnInterruptResponse()
+                                self._goal.resolve_active_turn(turn_id, next_turn_id)
+                        else:
+                            raise
+                self._goal.confirm_interrupt()
+                return response
+            except BaseException:
+                self._goal.cancel_interrupt()
                 raise
         return await self._codex._client.turn_interrupt(self.thread_id, self.id)
 
@@ -970,7 +1032,6 @@ class AsyncTurnHandle:
                 next_goal_notification,
                 lambda: self._codex._client.unregister_goal_operation(self._goal),
                 lambda: self._codex._client.cancel_goal_operation(self._goal),
-                lambda status: self._codex._client.finish_failed_goal(self._goal, status),
             )
 
         async def ordinary_stream() -> AsyncIterator[Notification]:

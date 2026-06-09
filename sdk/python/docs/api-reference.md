@@ -194,6 +194,9 @@ thread and use its existing configuration. Starting one replaces any stored
 goal. Streaming, steering, interruption, and the returned `TurnResult` still
 present one logical turn with one stable ID.
 
+Closing a goal stream releases its SDK routing state. It does not pause the
+persisted goal or stop work already running on the server.
+
 ## Sandbox
 
 Use `sandbox=` consistently on thread lifecycle methods and turns:

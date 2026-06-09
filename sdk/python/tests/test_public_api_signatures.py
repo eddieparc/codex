@@ -196,18 +196,32 @@ def test_dedicated_goal_operations_have_pythonic_signatures() -> None:
     ordinary_methods = [Thread.run, Thread.turn, AsyncThread.run, AsyncThread.turn]
 
     assert {
-        fn: (
-            list(inspect.signature(fn).parameters),
-            inspect.signature(fn).parameters["objective"].annotation,
-            inspect.signature(fn).return_annotation,
-        )
-        for fn in goal_methods
+        "goal_methods": {
+            fn: (
+                list(inspect.signature(fn).parameters),
+                inspect.signature(fn).parameters["objective"].annotation,
+                inspect.signature(fn).return_annotation,
+            )
+            for fn in goal_methods
+        },
+        "ordinary_goal_parameter": {
+            fn: "goal" in inspect.signature(fn).parameters for fn in ordinary_methods
+        },
+        "handle_constructors": {
+            handle: list(inspect.signature(handle).parameters)
+            for handle in (TurnHandle, AsyncTurnHandle)
+        },
     } == {
-        fn: (["self", "objective"], "str", return_type) for fn, return_type in goal_methods.items()
+        "goal_methods": {
+            fn: (["self", "objective"], "str", return_type)
+            for fn, return_type in goal_methods.items()
+        },
+        "ordinary_goal_parameter": dict.fromkeys(ordinary_methods, False),
+        "handle_constructors": {
+            TurnHandle: ["_client", "thread_id", "id"],
+            AsyncTurnHandle: ["_codex", "thread_id", "id"],
+        },
     }
-    assert {fn: "goal" in inspect.signature(fn).parameters for fn in ordinary_methods} == (
-        dict.fromkeys(ordinary_methods, False)
-    )
 
 
 def test_root_exports_approval_mode() -> None:
