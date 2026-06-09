@@ -35,12 +35,6 @@ def _wait_until_consumed(state, marker) -> None:
             raise AssertionError("goal stream did not begin collecting")
 
 
-def _wait_until_finished(state) -> None:
-    with state._condition:
-        if not state._condition.wait_for(lambda: state._finished, timeout=5):
-            raise AssertionError("cancelled goal startup did not finish cleanup")
-
-
 @pytest.mark.parametrize(
     ("error_code", "expected_error", "expected_status"),
     [
@@ -432,26 +426,22 @@ def test_async_goal_start_cancellation_interrupts_work_and_releases_routing(tmp_
             async with AsyncCodex(config=harness.app_server_config()) as codex:
                 thread = await codex.thread_start()
                 startup = asyncio.create_task(thread.start_goal("Cancel this goal during startup"))
-
-                # Keep the event loop occupied until model work starts so the
-                # worker result cannot reach start_goal before cancellation.
-                harness.responses.wait_for_requests(1)
-                router = codex._client._sync._router
-                with router._lock:
-                    goal_states = list(router._goal_operations.values())
-                if len(goal_states) != 1:
-                    raise AssertionError(f"expected one goal route, got {len(goal_states)}")
-                goal_state = goal_states[0]
+                await asyncio.sleep(0)
                 startup.cancel()
                 with pytest.raises(asyncio.CancelledError):
                     await startup
-                await asyncio.to_thread(_wait_until_finished, goal_state)
+                await asyncio.to_thread(harness.responses.wait_for_requests, 1)
 
                 deadline = time.monotonic() + 5
                 while True:
                     current = await thread.read()
-                    registered_goals = dict(codex._client._sync._router._goal_operations)
-                    if isinstance(current.thread.status.root, IdleThreadStatus):
+                    router = codex._client._sync._router
+                    with router._lock:
+                        registered_goals = dict(router._goal_operations)
+                    if (
+                        isinstance(current.thread.status.root, IdleThreadStatus)
+                        and not registered_goals
+                    ):
                         break
                     if time.monotonic() >= deadline:
                         raise AssertionError("cancelled goal turn did not stop")
