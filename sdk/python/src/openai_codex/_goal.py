@@ -1,9 +1,14 @@
+import asyncio
 import queue
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
+from typing import AsyncIterator, Awaitable, Callable, Iterator
 
+from .generated.notification_registry import notification_turn_id
 from .generated.v2_all import (
+    CodexErrorInfoValue,
     ItemCompletedNotification,
     ThreadGoalClearedNotification,
     ThreadGoalStatus,
@@ -14,8 +19,9 @@ from .generated.v2_all import (
     Turn,
     TurnCompletedNotification,
     TurnStartedNotification,
+    TurnStatus,
 )
-from .models import Notification
+from .models import Notification, UnknownNotification
 
 
 class _GoalStreamClosed(Exception):
@@ -30,6 +36,13 @@ def _terminal_goal_status(status: ThreadGoalStatus | None) -> bool:
         ThreadGoalStatus.budget_limited,
         ThreadGoalStatus.complete,
     }
+
+
+def _failed_goal_status(turn: Turn) -> ThreadGoalStatus:
+    error_info = turn.error.codex_error_info if turn.error is not None else None
+    if error_info is not None and error_info.root == CodexErrorInfoValue.usage_limit_exceeded:
+        return ThreadGoalStatus.usage_limited
+    return ThreadGoalStatus.blocked
 
 
 @dataclass(slots=True)
@@ -164,3 +177,274 @@ class _GoalOperationState:
     def wake_notification_reader(self) -> None:
         """Release a reader blocked after its stream has been closed."""
         self._notifications.put(_GoalStreamClosed())
+
+
+def _logical_notification(notification: Notification, logical_turn_id: str) -> Notification:
+    """Return a copy whose turn metadata uses the logical operation id."""
+    payload = notification.payload
+    if isinstance(payload, UnknownNotification):
+        params = dict(payload.params)
+        if isinstance(params.get("turnId"), str):
+            params["turnId"] = logical_turn_id
+        turn = params.get("turn")
+        if isinstance(turn, dict) and isinstance(turn.get("id"), str):
+            params["turn"] = {**turn, "id": logical_turn_id}
+        return Notification(notification.method, UnknownNotification(params))
+
+    turn_id = notification_turn_id(payload)
+    if turn_id is None:
+        return notification
+    if hasattr(payload, "turn_id"):
+        return Notification(
+            notification.method,
+            payload.model_copy(update={"turn_id": logical_turn_id}),
+        )
+    if hasattr(payload, "turn"):
+        logical_turn = payload.turn.model_copy(update={"id": logical_turn_id})
+        return Notification(
+            notification.method,
+            payload.model_copy(update={"turn": logical_turn}),
+        )
+    return notification
+
+
+def _logical_completion(
+    completed: TurnCompletedNotification,
+    *,
+    logical_turn_id: str,
+    started: Turn | None,
+    interrupted: bool,
+) -> TurnCompletedNotification:
+    """Coalesce the final physical completion into one logical completion."""
+    final_turn = completed.turn
+    started_at = started.started_at if started is not None else final_turn.started_at
+    duration_ms = final_turn.duration_ms
+    if started_at is not None and final_turn.completed_at is not None:
+        duration_ms = max(0, final_turn.completed_at - started_at) * 1000
+    updates: dict[str, object] = {
+        "id": logical_turn_id,
+        "started_at": started_at,
+        "duration_ms": duration_ms,
+    }
+    if interrupted:
+        updates["status"] = TurnStatus.interrupted
+    return completed.model_copy(update={"turn": final_turn.model_copy(update=updates)})
+
+
+@dataclass(slots=True)
+class _GoalStreamCursor:
+    """Consume physical goal events as one ordered logical turn stream."""
+
+    state: _GoalOperationState
+    started: Turn | None = None
+    last_completed: TurnCompletedNotification | None = None
+    failed_completion: TurnCompletedNotification | None = None
+    status: ThreadGoalStatus | None = None
+    active: bool = False
+    cleared: bool = False
+
+    def process(self, notification: Notification) -> tuple[list[Notification], bool]:
+        logical_turn_id = self.state.logical_turn_id
+        if logical_turn_id is None:
+            raise RuntimeError("goal operation has not been bound to a logical turn id")
+
+        payload = notification.payload
+        if isinstance(payload, TurnStartedNotification):
+            self.active = True
+            if self.started is not None:
+                return [], False
+            self.started = payload.turn
+            return [_logical_notification(notification, logical_turn_id)], False
+
+        if isinstance(payload, TurnCompletedNotification):
+            self.active = False
+            self.last_completed = payload
+            if payload.turn.status == TurnStatus.interrupted:
+                return [
+                    self._completion(
+                        notification.method,
+                        self.failed_completion or payload,
+                    )
+                ], True
+            if payload.turn.status == TurnStatus.failed:
+                self.failed_completion = payload
+                if self.cleared or _terminal_goal_status(self.status):
+                    self.state.finish()
+                    return [self._completion(notification.method, payload)], True
+                return [], False
+            if self.status is None and not self.cleared:
+                raise RuntimeError(
+                    "the connected Codex runtime did not activate goal mode for this turn"
+                )
+            if self.cleared or _terminal_goal_status(self.status):
+                self.state.finish()
+                return [
+                    self._completion(
+                        notification.method,
+                        self.failed_completion or payload,
+                    )
+                ], True
+            return [], False
+
+        events = [_logical_notification(notification, logical_turn_id)]
+        if isinstance(payload, ThreadGoalUpdatedNotification):
+            self.status = payload.goal.status
+            if self.status == ThreadGoalStatus.active:
+                self.cleared = False
+            events = []
+        elif isinstance(payload, ThreadGoalClearedNotification):
+            self.cleared = True
+            events = []
+
+        if (
+            not self.active
+            and self.last_completed is not None
+            and (self.cleared or _terminal_goal_status(self.status))
+        ):
+            self.state.finish()
+            events.append(
+                self._completion(
+                    "turn/completed",
+                    self.failed_completion or self.last_completed,
+                )
+            )
+            return events, True
+        return events, False
+
+    def _completion(
+        self,
+        method: str,
+        payload: TurnCompletedNotification,
+    ) -> Notification:
+        logical_turn_id = self.state.logical_turn_id
+        if logical_turn_id is None:
+            raise RuntimeError("goal operation has not been bound to a logical turn id")
+        return Notification(
+            method,
+            _logical_completion(
+                payload,
+                logical_turn_id=logical_turn_id,
+                started=self.started,
+                interrupted=self.state.explicit_interrupt(self.status),
+            ),
+        )
+
+
+@dataclass(slots=True)
+class _GoalNotificationStream(Iterator[Notification]):
+    """Closeable synchronous view of one logical goal operation."""
+
+    state: _GoalOperationState
+    next_notification: Callable[[], Notification]
+    unregister: Callable[[], None]
+    cancel_goal: Callable[[], None]
+    finish_failed_goal: Callable[[ThreadGoalStatus], None]
+    _cursor: _GoalStreamCursor = field(init=False)
+    _pending: deque[Notification] = field(default_factory=deque)
+    _closed: bool = False
+
+    def __post_init__(self) -> None:
+        self._cursor = _GoalStreamCursor(self.state)
+
+    def __iter__(self) -> "_GoalNotificationStream":
+        return self
+
+    def __next__(self) -> Notification:
+        if self._closed:
+            raise StopIteration
+        try:
+            while not self._pending:
+                notification = self.next_notification()
+                events, completed = self._cursor.process(notification)
+                payload = notification.payload
+                if (
+                    not completed
+                    and isinstance(payload, TurnCompletedNotification)
+                    and payload.turn.status == TurnStatus.failed
+                ):
+                    self.finish_failed_goal(_failed_goal_status(payload.turn))
+                self._pending.extend(events)
+                if completed:
+                    self._finish()
+            return self._pending.popleft()
+        except _GoalStreamClosed:
+            self.close()
+            raise StopIteration from None
+        except KeyboardInterrupt:
+            self.cancel_goal()
+            self.close()
+            raise
+        except BaseException:
+            self.close()
+            raise
+
+    def _finish(self) -> None:
+        if self._closed:
+            return
+        self.state.finish()
+        self.state.wake_notification_reader()
+        self.unregister()
+        self._closed = True
+
+    def close(self) -> None:
+        self._finish()
+
+
+@dataclass(slots=True)
+class _AsyncGoalNotificationStream(AsyncIterator[Notification]):
+    """Closeable asynchronous view of one logical goal operation."""
+
+    state: _GoalOperationState
+    next_notification: Callable[[], Awaitable[Notification]]
+    unregister: Callable[[], None]
+    cancel_goal: Callable[[], Awaitable[None]]
+    finish_failed_goal: Callable[[ThreadGoalStatus], Awaitable[None]]
+    _cursor: _GoalStreamCursor = field(init=False)
+    _pending: deque[Notification] = field(default_factory=deque)
+    _closed: bool = False
+
+    def __post_init__(self) -> None:
+        self._cursor = _GoalStreamCursor(self.state)
+
+    def __aiter__(self) -> "_AsyncGoalNotificationStream":
+        return self
+
+    async def __anext__(self) -> Notification:
+        if self._closed:
+            raise StopAsyncIteration
+        try:
+            while not self._pending:
+                notification = await self.next_notification()
+                events, completed = self._cursor.process(notification)
+                payload = notification.payload
+                if (
+                    not completed
+                    and isinstance(payload, TurnCompletedNotification)
+                    and payload.turn.status == TurnStatus.failed
+                ):
+                    await self.finish_failed_goal(_failed_goal_status(payload.turn))
+                self._pending.extend(events)
+                if completed:
+                    self._finish()
+            return self._pending.popleft()
+        except _GoalStreamClosed:
+            await self.aclose()
+            raise StopAsyncIteration from None
+        except asyncio.CancelledError:
+            await self.cancel_goal()
+            await self.aclose()
+            raise
+        except BaseException:
+            await self.aclose()
+            raise
+
+    def _finish(self) -> None:
+        if self._closed:
+            return
+        self.state.finish()
+        self.state.wake_notification_reader()
+        self.unregister()
+        self._closed = True
+
+    async def aclose(self) -> None:
+        self._finish()
