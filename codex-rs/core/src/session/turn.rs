@@ -214,11 +214,13 @@ pub(crate) async fn run_turn(
         }
 
         // Construct the input that we will send to the model.
-        let sampling_request_input: Vec<ResponseItem> = {
+        let sampling_request_input: Vec<ResponseItem> = async {
             sess.clone_history()
                 .await
                 .for_prompt(&turn_context.model_info.input_modalities)
-        };
+        }
+        .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
+        .await;
 
         let window_id = sess.services.model_client.current_window_id();
         let turn_metadata_header = turn_context
@@ -242,14 +244,19 @@ pub(crate) async fn run_turn(
                     last_agent_message: sampling_request_last_agent_message,
                 } = sampling_request_output;
                 can_drain_pending_input = true;
-                let has_pending_input = sess.input_queue.has_pending_input(&sess.active_turn).await;
+                let (has_pending_input, token_status, estimated_token_count) = async {
+                    let has_pending_input =
+                        sess.input_queue.has_pending_input(&sess.active_turn).await;
+                    let token_status =
+                        auto_compact_token_status(sess.as_ref(), turn_context.as_ref()).await;
+                    let estimated_token_count =
+                        sess.get_estimated_token_count(turn_context.as_ref()).await;
+                    (has_pending_input, token_status, estimated_token_count)
+                }
+                .instrument(trace_span!("run_turn.collect_post_sampling_state"))
+                .await;
                 let needs_follow_up = model_needs_follow_up || has_pending_input;
-                let token_status =
-                    auto_compact_token_status(sess.as_ref(), turn_context.as_ref()).await;
                 let token_limit_reached = token_status.token_limit_reached;
-
-                let estimated_token_count =
-                    sess.get_estimated_token_count(turn_context.as_ref()).await;
 
                 trace!(
                     turn_id = %turn_context.sub_id,
@@ -279,6 +286,7 @@ pub(crate) async fn run_turn(
                         CompactionReason::ContextLimit,
                         CompactionPhase::MidTurn,
                     )
+                    .instrument(trace_span!("run_turn.mid_turn_auto_compact"))
                     .await
                     {
                         let error = err.to_codex_protocol_error();
@@ -298,6 +306,7 @@ pub(crate) async fn run_turn(
                         stop_hook_active,
                         last_agent_message.clone(),
                     )
+                    .instrument(trace_span!("run_turn.stop_hooks"))
                     .await;
                     if stop_outcome.should_block {
                         if let Some(hook_prompt_message) =
@@ -329,6 +338,7 @@ pub(crate) async fn run_turn(
                         &sampling_request_input,
                         last_agent_message.clone(),
                     )
+                    .instrument(trace_span!("run_turn.legacy_after_agent_hook"))
                     .await
                     {
                         return None;
@@ -1008,12 +1018,14 @@ async fn run_sampling_request(
                 .await
                 .for_prompt(&turn_context.model_info.input_modalities)
         };
-        let prompt = build_prompt(
-            prompt_input,
-            router.as_ref(),
-            turn_context.as_ref(),
-            base_instructions.clone(),
-        );
+        let prompt = trace_span!("run_sampling_request.build_prompt").in_scope(|| {
+            build_prompt(
+                prompt_input,
+                router.as_ref(),
+                turn_context.as_ref(),
+                base_instructions.clone(),
+            )
+        });
         let err = match try_run_sampling_request(
             tool_runtime.clone(),
             Arc::clone(&sess),
@@ -1095,6 +1107,7 @@ pub(crate) async fn built_tools(
         .services
         .plugins_manager
         .plugins_for_config(&turn_context.config.plugins_config_input())
+        .instrument(trace_span!("built_tools.load_plugins"))
         .await;
 
     let apps_enabled = turn_context.apps_enabled();
@@ -1125,42 +1138,48 @@ pub(crate) async fn built_tools(
         .into_iter()
         .map(|connector_id| connector_id.0)
         .collect::<Vec<_>>();
-    let discoverable_tools = if apps_enabled && tool_suggest_enabled(turn_context) {
-        if let Some(accessible_connectors) = accessible_connectors_with_enabled_state.as_ref() {
-            match connectors::list_tool_suggest_discoverable_tools_with_auth(
-                &turn_context.config,
-                sess.services.plugins_manager.as_ref(),
-                auth.as_ref(),
-                accessible_connectors.as_slice(),
-                &loaded_plugin_app_connector_ids,
-            )
-            .await
-            .map(|discoverable_tools| {
-                filter_request_plugin_install_discoverable_tools_for_client(
-                    discoverable_tools,
-                    turn_context.app_server_client_name.as_deref(),
+    let discoverable_tools = async {
+        if apps_enabled && tool_suggest_enabled(turn_context) {
+            if let Some(accessible_connectors) = accessible_connectors_with_enabled_state.as_ref() {
+                match connectors::list_tool_suggest_discoverable_tools_with_auth(
+                    &turn_context.config,
+                    sess.services.plugins_manager.as_ref(),
+                    auth.as_ref(),
+                    accessible_connectors.as_slice(),
+                    &loaded_plugin_app_connector_ids,
                 )
-            }) {
-                Ok(discoverable_tools) if discoverable_tools.is_empty() => None,
-                Ok(discoverable_tools) => Some(discoverable_tools),
-                Err(err) => {
-                    warn!("failed to load discoverable tool suggestions: {err:#}");
-                    None
+                .await
+                .map(|discoverable_tools| {
+                    filter_request_plugin_install_discoverable_tools_for_client(
+                        discoverable_tools,
+                        turn_context.app_server_client_name.as_deref(),
+                    )
+                }) {
+                    Ok(discoverable_tools) if discoverable_tools.is_empty() => None,
+                    Ok(discoverable_tools) => Some(discoverable_tools),
+                    Err(err) => {
+                        warn!("failed to load discoverable tool suggestions: {err:#}");
+                        None
+                    }
                 }
+            } else {
+                None
             }
         } else {
             None
         }
-    } else {
-        None
-    };
+    }
+    .instrument(trace_span!("built_tools.load_discoverable_tools"))
+    .await;
 
-    let mcp_tool_exposure = build_mcp_tool_exposure(
-        &all_mcp_tools,
-        connectors.as_deref(),
-        &turn_context.config,
-        search_tool_enabled(turn_context),
-    );
+    let mcp_tool_exposure = trace_span!("built_tools.build_mcp_tool_exposure").in_scope(|| {
+        build_mcp_tool_exposure(
+            &all_mcp_tools,
+            connectors.as_deref(),
+            &turn_context.config,
+            search_tool_enabled(turn_context),
+        )
+    });
     let mcp_tools = has_mcp_servers.then_some(mcp_tool_exposure.direct_tools);
     let deferred_mcp_tools = mcp_tool_exposure.deferred_tools;
     Ok(Arc::new(ToolRouter::from_turn_context(
