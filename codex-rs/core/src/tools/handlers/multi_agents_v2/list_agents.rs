@@ -1,3 +1,4 @@
+use super::analytics::ToolCallAnalytics;
 use super::*;
 use crate::agent::control::ListedAgent;
 use crate::tools::handlers::multi_agents_spec::create_list_agents_tool;
@@ -5,7 +6,6 @@ use codex_tools::ToolSpec;
 
 pub(crate) struct Handler;
 
-#[async_trait::async_trait]
 impl ToolExecutor<ToolInvocation> for Handler {
     fn tool_name(&self) -> ToolName {
         ToolName::plain("list_agents")
@@ -15,7 +15,21 @@ impl ToolExecutor<ToolInvocation> for Handler {
         create_list_agents_tool()
     }
 
-    async fn handle(
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
+        Box::pin(async move {
+            let analytics = ToolCallAnalytics::new(&invocation, CollabAgentTool::ListAgents);
+            let result = self.handle_call(invocation).await;
+            analytics.finish(&result);
+            result
+        })
+    }
+}
+
+impl Handler {
+    async fn handle_call(
         &self,
         invocation: ToolInvocation,
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
@@ -60,7 +74,7 @@ pub(crate) struct ListAgentsResult {
 }
 
 impl ToolOutput for ListAgentsResult {
-    fn log_preview(&self) -> String {
+    fn log_output(&self) -> String {
         tool_output_json_text(self, "list_agents")
     }
 

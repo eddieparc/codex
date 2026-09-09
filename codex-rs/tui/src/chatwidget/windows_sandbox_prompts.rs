@@ -15,7 +15,7 @@ impl ChatWidget {
 
     #[cfg(any(target_os = "windows", test))]
     pub(super) fn elevated_windows_sandbox_setup_required(&self) -> bool {
-        WindowsSandboxLevel::from_config(&self.config) == WindowsSandboxLevel::Elevated
+        crate::windows_sandbox::level_from_config(&self.config) == WindowsSandboxLevel::Elevated
             && self
                 .config
                 .config_layer_stack
@@ -23,15 +23,13 @@ impl ChatWidget {
                 .windows_sandbox_mode
                 .source
                 .is_some()
-            && !crate::legacy_core::windows_sandbox::sandbox_setup_is_complete(
-                self.config.codex_home.as_path(),
-            )
+            && !crate::windows_sandbox::sandbox_setup_is_complete(self.config.codex_home.as_path())
     }
 
     #[cfg(target_os = "windows")]
     pub(crate) fn world_writable_warning_details(&self) -> Option<(Vec<String>, usize, bool)> {
         if self
-            .config
+            .local_settings
             .notices
             .hide_world_writable_warning
             .unwrap_or(false)
@@ -50,13 +48,15 @@ impl ChatWidget {
         else {
             return None;
         };
-        match codex_windows_sandbox::apply_world_writable_scan_and_denies_for_permissions(
+        let result = codex_windows_sandbox::apply_world_writable_scan_and_denies_for_permissions(
             self.config.codex_home.as_path(),
             cwd.as_path(),
             &env_map,
             &permissions,
             Some(self.config.codex_home.as_path()),
-        ) {
+        );
+        crate::windows_sandbox::record_world_writable_scan_result(&self.session_telemetry, &result);
+        match result {
             Ok(_) => None,
             Err(_) => Some((Vec::new(), 0, true)),
         }
@@ -68,7 +68,7 @@ impl ChatWidget {
         None
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", test))]
     pub(crate) fn open_world_writable_warning_confirmation(
         &mut self,
         preset: Option<ApprovalPreset>,
@@ -91,7 +91,7 @@ impl ChatWidget {
                 "Full Access mode"
             } else if profile
                 .file_system_sandbox_policy()
-                .can_write_path_with_cwd(self.config.cwd.as_path(), self.config.cwd.as_path())
+                .can_write_local_path_with_cwd(self.config.cwd.as_path(), self.config.cwd.as_path())
             {
                 "Agent mode"
             } else {
@@ -108,8 +108,7 @@ impl ChatWidget {
             Line::from(vec![
                 "We couldn't complete the world-writable scan, so protections cannot be verified. "
                     .into(),
-                format!("The Windows sandbox cannot guarantee protection in {mode_label}.")
-                    .fg(Color::Red),
+                format!("The Windows sandbox cannot guarantee protection in {mode_label}.").red(),
             ])
         } else {
             Line::from(vec![
@@ -188,6 +187,7 @@ impl ChatWidget {
                 description: Some(format!("Apply {mode_label} for this session")),
                 actions: accept_actions,
                 dismiss_on_select: true,
+                require_explicit_confirmation: true,
                 ..Default::default()
             },
             SelectionItem {
@@ -195,6 +195,7 @@ impl ChatWidget {
                 description: Some(format!("Enable {mode_label} and remember this choice")),
                 actions: accept_and_remember_actions,
                 dismiss_on_select: true,
+                require_explicit_confirmation: true,
                 ..Default::default()
             },
         ];
@@ -207,7 +208,7 @@ impl ChatWidget {
         });
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(all(not(target_os = "windows"), not(test)))]
     pub(crate) fn open_world_writable_warning_confirmation(
         &mut self,
         _preset: Option<ApprovalPreset>,
@@ -225,54 +226,6 @@ impl ChatWidget {
         profile_selection: Option<PermissionProfileSelection>,
     ) {
         use ratatui_macros::line;
-
-        if !crate::legacy_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED {
-            // Legacy flow (pre-NUX): explain the experimental sandbox and let the user enable it
-            // directly (no elevation prompts).
-            let mut header = ColumnRenderable::new();
-            header.push(*Box::new(
-                Paragraph::new(vec![
-                    line!["Agent mode on Windows uses an experimental sandbox to limit network and filesystem access.".bold()],
-                    line!["Learn more: https://developers.openai.com/codex/windows"],
-                ])
-                .wrap(Wrap { trim: false }),
-            ));
-
-            let preset_clone = preset;
-            let items = vec![
-                SelectionItem {
-                    name: "Enable experimental sandbox".to_string(),
-                    description: None,
-                    actions: vec![Box::new(move |tx| {
-                        tx.send(AppEvent::EnableWindowsSandboxForAgentMode {
-                            preset: preset_clone.clone(),
-                            mode: WindowsSandboxEnableMode::Legacy,
-                            profile_selection: profile_selection.clone(),
-                        });
-                    })],
-                    dismiss_on_select: true,
-                    ..Default::default()
-                },
-                SelectionItem {
-                    name: "Go back".to_string(),
-                    description: None,
-                    actions: vec![Box::new(|tx| {
-                        tx.send(AppEvent::OpenApprovalsPopup);
-                    })],
-                    dismiss_on_select: true,
-                    ..Default::default()
-                },
-            ];
-
-            self.bottom_pane.show_selection_view(SelectionViewParams {
-                title: None,
-                footer_hint: Some(standard_popup_hint_line()),
-                items,
-                header: Box::new(header),
-                ..Default::default()
-            });
-            return;
-        }
 
         self.session_telemetry.counter(
             "codex.windows_sandbox.elevated_prompt_shown",
@@ -339,6 +292,7 @@ impl ChatWidget {
                     });
                 })],
                 dismiss_on_select: true,
+                require_explicit_confirmation: true,
                 ..Default::default()
             });
         }
@@ -463,6 +417,7 @@ impl ChatWidget {
                     }
                 })],
                 dismiss_on_select: true,
+                require_explicit_confirmation: true,
                 ..Default::default()
             });
         }
@@ -508,7 +463,7 @@ impl ChatWidget {
 
     #[cfg(target_os = "windows")]
     pub(crate) fn maybe_prompt_windows_sandbox_enable(&mut self, show_now: bool) {
-        let windows_sandbox_level = WindowsSandboxLevel::from_config(&self.config);
+        let windows_sandbox_level = crate::windows_sandbox::level_from_config(&self.config);
         let setup_is_required = windows_sandbox_level == WindowsSandboxLevel::Disabled
             || self.elevated_windows_sandbox_setup_required();
         if show_now
@@ -524,7 +479,7 @@ impl ChatWidget {
     #[cfg(not(target_os = "windows"))]
     pub(crate) fn maybe_prompt_windows_sandbox_enable(&mut self, _show_now: bool) {}
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", test))]
     pub(crate) fn show_windows_sandbox_setup_status(&mut self) {
         // While elevated sandbox setup runs, prevent typing so the user doesn't
         // accidentally queue messages that will run under an unexpected mode.
@@ -532,6 +487,7 @@ impl ChatWidget {
             /*enabled*/ false,
             Some("Input disabled until setup completes.".to_string()),
         );
+        self.bottom_pane.reset_status_timer(Duration::ZERO);
         self.bottom_pane.ensure_status_indicator();
         self.bottom_pane
             .set_interrupt_hint_visible(/*visible*/ false);
@@ -544,11 +500,11 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", test)))]
     #[allow(dead_code)]
     pub(crate) fn show_windows_sandbox_setup_status(&mut self) {}
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", test))]
     pub(crate) fn clear_windows_sandbox_setup_status(&mut self) {
         self.bottom_pane
             .set_composer_input_enabled(/*enabled*/ true, /*placeholder*/ None);
@@ -556,6 +512,6 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", test)))]
     pub(crate) fn clear_windows_sandbox_setup_status(&mut self) {}
 }

@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use codex_extension_api::FunctionCallError;
 use codex_extension_api::JsonToolOutput;
 use codex_extension_api::ToolCall;
@@ -37,6 +36,7 @@ pub(crate) struct GoalToolExecutor {
     analytics: GoalAnalytics,
     event_emitter: GoalEventEmitter,
     metrics: GoalMetrics,
+    max_goal_token_budget: Option<i64>,
 }
 
 #[derive(Clone, Copy)]
@@ -90,6 +90,7 @@ impl GoalToolExecutor {
             analytics,
             event_emitter,
             metrics,
+            max_goal_token_budget: None,
         }
     }
 
@@ -100,6 +101,7 @@ impl GoalToolExecutor {
         analytics: GoalAnalytics,
         event_emitter: GoalEventEmitter,
         metrics: GoalMetrics,
+        max_goal_token_budget: Option<i64>,
     ) -> Self {
         Self {
             kind: GoalToolKind::Create,
@@ -109,6 +111,7 @@ impl GoalToolExecutor {
             analytics,
             event_emitter,
             metrics,
+            max_goal_token_budget,
         }
     }
 
@@ -128,12 +131,12 @@ impl GoalToolExecutor {
             analytics,
             event_emitter,
             metrics,
+            max_goal_token_budget: None,
         }
     }
 }
 
-#[async_trait]
-impl ToolExecutor<ToolCall> for GoalToolExecutor {
+impl<'call> ToolExecutor<ToolCall<'call>> for GoalToolExecutor {
     fn tool_name(&self) -> ToolName {
         ToolName::plain(match self.kind {
             GoalToolKind::Get => GET_GOAL_TOOL_NAME,
@@ -150,19 +153,27 @@ impl ToolExecutor<ToolCall> for GoalToolExecutor {
         }
     }
 
-    async fn handle(&self, invocation: ToolCall) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
-        match self.kind {
-            GoalToolKind::Get => self.handle_get(invocation).await,
-            GoalToolKind::Create => self.handle_create(invocation).await,
-            GoalToolKind::Update => self.handle_update(invocation).await,
-        }
+    fn handle<'a>(
+        &'a self,
+        invocation: ToolCall<'call>,
+    ) -> codex_extension_api::ToolExecutorFuture<'a>
+    where
+        'call: 'a,
+    {
+        Box::pin(async move {
+            match self.kind {
+                GoalToolKind::Get => self.handle_get(invocation).await,
+                GoalToolKind::Create => self.handle_create(invocation).await,
+                GoalToolKind::Update => self.handle_update(invocation).await,
+            }
+        })
     }
 }
 
 impl GoalToolExecutor {
     async fn handle_get(
         &self,
-        invocation: ToolCall,
+        invocation: ToolCall<'_>,
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let _ = invocation.function_arguments()?;
         let goal = self
@@ -179,13 +190,15 @@ impl GoalToolExecutor {
 
     async fn handle_create(
         &self,
-        invocation: ToolCall,
+        invocation: ToolCall<'_>,
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let mut request: CreateGoalRequest = parse_arguments(invocation.function_arguments()?)?;
         request.objective = request.objective.trim().to_string();
         validate_thread_goal_objective(&request.objective)
             .map_err(FunctionCallError::RespondToModel)?;
-        validate_goal_budget(request.token_budget).map_err(FunctionCallError::RespondToModel)?;
+        request.token_budget = request.token_budget.or(self.max_goal_token_budget);
+        validate_goal_budget(request.token_budget, self.max_goal_token_budget)
+            .map_err(FunctionCallError::RespondToModel)?;
 
         let goal = self
             .state_db
@@ -220,7 +233,7 @@ impl GoalToolExecutor {
 
     async fn handle_update(
         &self,
-        invocation: ToolCall,
+        invocation: ToolCall<'_>,
     ) -> Result<Box<dyn ToolOutput>, FunctionCallError> {
         let args: UpdateGoalArgs = parse_arguments(invocation.function_arguments()?)?;
         if !matches!(
@@ -292,7 +305,7 @@ impl GoalToolExecutor {
 
     fn emit_goal_updated_from_tool_call(
         &self,
-        invocation: &ToolCall,
+        invocation: &ToolCall<'_>,
         turn_id: Option<String>,
         goal: ThreadGoal,
     ) {
@@ -397,11 +410,22 @@ where
         .map_err(|err| FunctionCallError::RespondToModel(err.to_string()))
 }
 
-pub(crate) fn validate_goal_budget(value: Option<i64>) -> Result<(), String> {
+pub(crate) fn validate_goal_budget(
+    value: Option<i64>,
+    max_goal_token_budget: Option<i64>,
+) -> Result<(), String> {
     if let Some(value) = value
         && value <= 0
     {
         return Err("goal budgets must be positive when provided".to_string());
+    }
+    if let Some(value) = value
+        && let Some(max_goal_token_budget) = max_goal_token_budget
+        && value > max_goal_token_budget
+    {
+        return Err(format!(
+            "goal token budget {value} exceeds the maximum allowed goal token budget of {max_goal_token_budget}"
+        ));
     }
     Ok(())
 }

@@ -76,3 +76,46 @@ fn previous_char_boundary_handles_multibyte_text() {
     let text = "aé";
     assert_eq!(previous_char_boundary(text, /*max_bytes*/ 2), 1);
 }
+
+#[tokio::test]
+async fn validate_consolidation_artifacts_rejects_invalid_summary() {
+    let home = TempDir::new().expect("tempdir");
+    let root = home.path().join("memories");
+    fs::create_dir_all(&root).expect("create memory root");
+    fs::write(root.join("MEMORY.md"), "memory").expect("write memory");
+    fs::write(root.join("memory_summary.md"), "outdated\n").expect("write summary");
+
+    let err = validate_consolidation_artifacts(&root)
+        .await
+        .expect_err("invalid summary should fail validation");
+
+    assert!(err.to_string().contains("does not start with v1"));
+}
+
+#[tokio::test]
+async fn v2_accepts_summary_only_and_checks_its_format_and_size() -> anyhow::Result<()> {
+    let home = TempDir::new()?;
+    let root = home.path();
+    fs::write(
+        root.join("memory_summary.md"),
+        "v1\n\n## User Profile\nProfile\n## User preferences\nPreferences\n## General Tips\nTips\n## What's in Memory\nIndex\n",
+    )?;
+    validate_consolidation_artifacts_for_version(root, MemoryVersion::V2).await?;
+    assert!(validate_consolidation_artifacts(root).await.is_err());
+    fs::write(root.join("memory_summary.md"), "v2\nsummary")?;
+    assert!(
+        validate_consolidation_artifacts_for_version(root, MemoryVersion::V2)
+            .await
+            .is_err()
+    );
+    fs::write(
+        root.join("memory_summary.md"),
+        format!("v1\n{}", "x".repeat(10_000)),
+    )?;
+    assert!(
+        validate_consolidation_artifacts_for_version(root, MemoryVersion::V2)
+            .await
+            .is_err()
+    );
+    Ok(())
+}

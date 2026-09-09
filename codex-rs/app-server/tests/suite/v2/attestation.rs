@@ -4,6 +4,7 @@ use app_test_support::ChatGptAuthFixture;
 use app_test_support::TestAppServer;
 use app_test_support::to_response;
 use app_test_support::write_chatgpt_auth;
+use app_test_support::write_models_cache;
 use codex_app_server_protocol::AttestationGenerateResponse;
 use codex_app_server_protocol::ClientInfo;
 use codex_app_server_protocol::InitializeCapabilities;
@@ -36,33 +37,22 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
 {
     skip_if_no_network!(Ok(()));
 
-    let websocket_server = start_websocket_server_with_headers(vec![
-        // App-server refreshes `/models` over HTTP during thread startup. It points at the same
-        // local test base URL, so let that non-websocket probe consume one connection before the
-        // websocket handshake under test arrives.
-        WebSocketConnectionConfig {
-            requests: Vec::new(),
-            response_headers: Vec::new(),
-            accept_delay: None,
-            close_after_requests: true,
-        },
-        WebSocketConnectionConfig {
-            requests: vec![
-                vec![
-                    responses::ev_response_created("warm-1"),
-                    responses::ev_completed("warm-1"),
-                ],
-                vec![
-                    responses::ev_response_created("resp-1"),
-                    responses::ev_assistant_message("msg-1", "Done"),
-                    responses::ev_completed("resp-1"),
-                ],
+    let websocket_server = start_websocket_server_with_headers(vec![WebSocketConnectionConfig {
+        requests: vec![
+            vec![
+                responses::ev_response_created("warm-1"),
+                responses::ev_completed("warm-1"),
             ],
-            response_headers: Vec::new(),
-            accept_delay: None,
-            close_after_requests: true,
-        },
-    ])
+            vec![
+                responses::ev_response_created("resp-1"),
+                responses::ev_assistant_message("msg-1", "Done"),
+                responses::ev_completed("resp-1"),
+            ],
+        ],
+        response_headers: Vec::new(),
+        accept_delay: None,
+        close_after_requests: true,
+    }])
     .await;
 
     let codex_home = TempDir::new()?;
@@ -75,9 +65,13 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
         ChatGptAuthFixture::new("access-chatgpt").plan_type("pro"),
         AuthCredentialsStoreMode::File,
     )?;
+    write_models_cache(codex_home.path()).await?;
 
-    let mut mcp =
-        TestAppServer::new_with_env(codex_home.path(), &[("OPENAI_API_KEY", None)]).await?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .with_env_overrides(&[("OPENAI_API_KEY", None)])
+        .build()
+        .await?;
     let initialized = timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.initialize_with_capabilities(
@@ -90,6 +84,8 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
                 experimental_api: true,
                 request_attestation: true,
                 opt_out_notification_methods: None,
+                mcp_server_openai_form_elicitation: false,
+                extensions: None,
             }),
         ),
     )
@@ -99,7 +95,7 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
     };
 
     let thread_request_id = mcp
-        .send_thread_start_request(ThreadStartParams::default())
+        .send_thread_start_request_with_auto_env(ThreadStartParams::default())
         .await?;
     let thread_response: JSONRPCResponse = timeout(
         DEFAULT_READ_TIMEOUT,
@@ -139,7 +135,7 @@ async fn attestation_generate_round_trip_adds_header_to_responses_websocket_hand
                     mcp.send_response(
                         request_id,
                         serde_json::to_value(AttestationGenerateResponse {
-                            token: ATTESTATION_HEADER.to_string(),
+                            token: ATTESTATION_HEADER.into(),
                         })?,
                     )
                     .await?;

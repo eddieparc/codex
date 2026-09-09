@@ -5,6 +5,7 @@
 //! `windows_sandbox_prompts`.
 
 use super::*;
+use codex_protocol::openai_models::MODEL_SPECIALTY_CYBER;
 
 impl ChatWidget {
     /// Open the permissions popup.
@@ -14,11 +15,22 @@ impl ChatWidget {
 
     /// Open a popup to choose the permissions mode.
     pub(crate) fn open_permissions_popup(&mut self) {
-        if self.config.explicit_permission_profile_mode {
-            self.open_permission_profiles_popup();
+        if self.config.explicit_permission_profile_mode
+            || self.permission_profiles_menu_opened
+            || self
+                .config
+                .permissions
+                .active_permission_profile()
+                .is_some_and(|profile| !profile.id.starts_with(':'))
+        {
+            self.request_permission_profiles();
             return;
         }
 
+        self.open_legacy_permissions_popup();
+    }
+
+    pub(super) fn open_legacy_permissions_popup(&mut self) {
         let include_read_only = cfg!(target_os = "windows");
         let current_approval =
             AskForApproval::from(self.config.permissions.approval_policy.value());
@@ -29,7 +41,7 @@ impl ChatWidget {
         let presets: Vec<ApprovalPreset> = builtin_approval_presets();
 
         #[cfg(target_os = "windows")]
-        let windows_sandbox_level = WindowsSandboxLevel::from_config(&self.config);
+        let windows_sandbox_level = crate::windows_sandbox::level_from_config(&self.config);
         #[cfg(target_os = "windows")]
         let windows_degraded_sandbox_enabled =
             matches!(windows_sandbox_level, WindowsSandboxLevel::RestrictedToken);
@@ -37,9 +49,7 @@ impl ChatWidget {
         let windows_degraded_sandbox_enabled = false;
 
         let show_elevate_sandbox_hint =
-            crate::legacy_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
-                && windows_degraded_sandbox_enabled
-                && presets.iter().any(|preset| preset.id == "auto");
+            windows_degraded_sandbox_enabled && presets.iter().any(|preset| preset.id == "auto");
 
         let guardian_disabled_reason = |enabled: bool| {
             let mut next_features = self.config.features.get().clone();
@@ -105,12 +115,17 @@ impl ChatWidget {
                         name: APPROVE_FOR_ME_LABEL.to_string(),
                         description: Some(AUTO_REVIEW_DESCRIPTION.to_string()),
                         is_current: current_review_policy == ApprovalsReviewer::AutoReview
-                            && Self::preset_matches_current(
+                            && (Self::preset_matches_current(
                                 current_approval,
                                 &current_permission_profile,
                                 self.config.cwd.as_path(),
                                 &preset,
-                            ),
+                            ) || (current_approval == AskForApproval::OnRequest
+                                && self
+                                    .config
+                                    .config_layer_stack
+                                    .requirements()
+                                    .auto_review_required_for_model(self.current_model()))),
                         actions: self.permission_mode_actions(
                             &preset,
                             APPROVE_FOR_ME_LABEL.to_string(),
@@ -175,7 +190,7 @@ impl ChatWidget {
         };
 
         let mut items = vec![SelectionItem {
-            name: "Command".to_string(),
+            name: "Action".to_string(),
             description: Some("Rationale".to_string()),
             is_disabled: true,
             search_value: Some(String::new()),
@@ -306,13 +321,8 @@ impl ChatWidget {
                 Self::permission_profile_selection_actions,
             )
         };
-        let requires_confirmation = approvals_reviewer == ApprovalsReviewer::User
-            && preset.id == "full-access"
-            && !self
-                .config
-                .notices
-                .hide_full_access_warning
-                .unwrap_or(false);
+        let requires_confirmation =
+            approvals_reviewer == ApprovalsReviewer::User && preset.id == "full-access";
         if requires_confirmation {
             let preset = preset.clone();
             return vec![Box::new(move |tx| {
@@ -326,13 +336,13 @@ impl ChatWidget {
         if approvals_reviewer == ApprovalsReviewer::User && preset.id == "auto" {
             #[cfg(target_os = "windows")]
             {
-                if WindowsSandboxLevel::from_config(&self.config) == WindowsSandboxLevel::Disabled {
+                if crate::windows_sandbox::level_from_config(&self.config)
+                    == WindowsSandboxLevel::Disabled
+                {
                     let preset = preset.clone();
-                    if crate::legacy_core::windows_sandbox::ELEVATED_SANDBOX_NUX_ENABLED
-                        && crate::legacy_core::windows_sandbox::sandbox_setup_is_complete(
-                            self.config.codex_home.as_path(),
-                        )
-                    {
+                    if crate::windows_sandbox::sandbox_setup_is_complete(
+                        self.config.codex_home.as_path(),
+                    ) {
                         return vec![Box::new(move |tx| {
                             tx.send(AppEvent::EnableWindowsSandboxForAgentMode {
                                 preset: preset.clone(),
@@ -397,10 +407,8 @@ impl ChatWidget {
                 matches!(
                     current_permission_profile,
                     PermissionProfile::Managed { .. }
-                ) && file_system_policy.can_write_path_with_cwd(cwd, cwd)
+                ) && file_system_policy.can_write_local_path_with_cwd(cwd, cwd)
                     && !file_system_policy.has_full_disk_write_access()
-                    && current_permission_profile.network_sandbox_policy()
-                        == preset.permission_profile.network_sandbox_policy()
             }
             _ => current_permission_profile == &preset.permission_profile,
         }
@@ -414,37 +422,47 @@ impl ChatWidget {
     ) {
         let selected_name = preset.label.to_string();
         let approval = AskForApproval::from(preset.approval);
-        let mut header_children: Vec<Box<dyn Renderable>> = Vec::new();
+        let is_cyber_model = self.model_catalog.try_list_models().is_ok_and(|models| {
+            models.iter().any(|model| {
+                model.model == self.current_model()
+                    && model.model_specialty.as_deref() == Some(MODEL_SPECIALTY_CYBER)
+            })
+        });
         let title_line = Line::from("Enable full access?").bold();
-        let info_line = Line::from(vec![
-            "When Codex runs with full access, it can edit any file on your computer and run commands with network, without your approval. "
-                .into(),
-            "Exercise caution when enabling full access. This significantly increases the risk of data loss, leaks, or unexpected behavior."
-                .fg(Color::Red),
-        ]);
-        header_children.push(Box::new(title_line));
-        header_children.push(Box::new(
-            Paragraph::new(vec![info_line]).wrap(Wrap { trim: false }),
-        ));
-        let header = ColumnRenderable::with(header_children);
+        let info_lines = if is_cyber_model {
+            let recommendation = if auto_review_available(&self.config) {
+                "We strongly recommend selecting \"Approve for me\" instead, and customizing the reviewer policy for your use case."
+            } else {
+                "We strongly recommend selecting \"Ask for approval\" instead."
+            };
+            vec![
+                Line::default(),
+                Line::from(
+                    "When Codex runs with full access, it can edit any file on your computer and run commands with network, without your approval.",
+                ),
+                Line::default(),
+                Line::from(vec![
+                    "Cyber models carry a higher risk of dangerous actions.".red(),
+                    " Ensure proper safeguards are in place before granting full access. ".into(),
+                    recommendation.into(),
+                ]),
+            ]
+        } else {
+            vec![Line::from(vec![
+                "When Codex runs with full access, it can edit any file on your computer and run commands with network, without your approval. "
+                    .into(),
+                "Exercise caution when enabling full access. This significantly increases the risk of data loss, leaks, or unexpected behavior."
+                    .red(),
+            ])]
+        };
+        let header = Paragraph::new(
+            std::iter::once(title_line)
+                .chain(info_lines)
+                .collect::<Vec<_>>(),
+        )
+        .wrap(Wrap { trim: false });
 
-        let mut accept_actions = profile_selection.clone().map_or_else(
-            || {
-                Self::approval_preset_actions(
-                    approval,
-                    preset.permission_profile.clone(),
-                    preset.active_permission_profile.clone(),
-                    selected_name.clone(),
-                    ApprovalsReviewer::User,
-                )
-            },
-            Self::permission_profile_selection_actions,
-        );
-        accept_actions.push(Box::new(|tx| {
-            tx.send(AppEvent::UpdateFullAccessWarningAcknowledged(true));
-        }));
-
-        let mut accept_and_remember_actions = profile_selection.map_or_else(
+        let accept_actions = profile_selection.map_or_else(
             || {
                 Self::approval_preset_actions(
                     approval,
@@ -456,10 +474,6 @@ impl ChatWidget {
             },
             Self::permission_profile_selection_actions,
         );
-        accept_and_remember_actions.push(Box::new(|tx| {
-            tx.send(AppEvent::UpdateFullAccessWarningAcknowledged(true));
-            tx.send(AppEvent::PersistFullAccessWarningAcknowledged);
-        }));
 
         let deny_actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
             if return_to_permissions {
@@ -474,13 +488,6 @@ impl ChatWidget {
                 name: "Yes, continue anyway".to_string(),
                 description: Some("Apply full access for this session".to_string()),
                 actions: accept_actions,
-                dismiss_on_select: true,
-                ..Default::default()
-            },
-            SelectionItem {
-                name: "Yes, and don't ask again".to_string(),
-                description: Some("Enable full access and remember this choice".to_string()),
-                actions: accept_and_remember_actions,
                 dismiss_on_select: true,
                 ..Default::default()
             },

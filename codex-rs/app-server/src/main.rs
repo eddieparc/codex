@@ -1,4 +1,7 @@
+#![recursion_limit = "256"]
+
 use clap::Parser;
+use codex_app_server::AppServerCodeModeHostArgs;
 use codex_app_server::AppServerRuntimeOptions;
 use codex_app_server::AppServerTransport;
 use codex_app_server::AppServerWebsocketAuthArgs;
@@ -11,6 +14,14 @@ use codex_protocol::protocol::SessionSource;
 use codex_utils_cli::CliConfigOverrides;
 use std::path::PathBuf;
 
+#[cfg(all(
+    target_os = "linux",
+    target_env = "musl",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[global_allocator]
+static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 // Debug-only test hook: lets integration tests point the server at a temporary
 // managed config file without writing to /etc.
 const MANAGED_CONFIG_PATH_ENV_VAR: &str = "CODEX_APP_SERVER_MANAGED_CONFIG_PATH";
@@ -21,6 +32,9 @@ const DISABLE_MANAGED_CONFIG_ENV_VAR: &str = "CODEX_APP_SERVER_DISABLE_MANAGED_C
 struct AppServerArgs {
     #[command(flatten)]
     config_overrides: CliConfigOverrides,
+
+    #[command(flatten)]
+    code_mode_host: AppServerCodeModeHostArgs,
 
     /// Transport endpoint URL. Supported values: `stdio://` (default),
     /// `unix://`, `unix://PATH`, `ws://IP:PORT`, `off`.
@@ -53,15 +67,17 @@ struct AppServerArgs {
     #[arg(long = "disable-plugin-startup-tasks-for-tests", hide = true)]
     disable_plugin_startup_tasks_for_tests: bool,
 
-    /// Enable remote control for this app-server process.
+    /// Enable remote control for this app-server process without changing persistence.
     #[arg(long = "remote-control", hide = true)]
     remote_control: bool,
 }
 
 fn main() -> anyhow::Result<()> {
-    arg0_dispatch_or_else(|arg0_paths: Arg0DispatchPaths| async move {
+    let remote_control_disabled = codex_app_server::take_remote_control_disabled_env();
+    arg0_dispatch_or_else(move |arg0_paths: Arg0DispatchPaths| async move {
         let AppServerArgs {
             config_overrides,
+            code_mode_host,
             listen,
             session_source,
             auth,
@@ -79,12 +95,20 @@ fn main() -> anyhow::Result<()> {
         };
         let transport = listen;
         let auth = auth.try_into_settings()?;
-        let mut runtime_options = AppServerRuntimeOptions::default();
+        let mut runtime_options = AppServerRuntimeOptions {
+            code_mode_host_transport: code_mode_host.into(),
+            ..Default::default()
+        };
         #[cfg(debug_assertions)]
         if disable_plugin_startup_tasks_for_tests {
             runtime_options.plugin_startup_tasks = PluginStartupTasks::Skip;
         }
-        runtime_options.remote_control_enabled = remote_control;
+        runtime_options.remote_control_startup_mode =
+            match (remote_control, remote_control_disabled) {
+                (true, _) => codex_app_server::RemoteControlStartupMode::EnabledEphemeral,
+                (false, true) => codex_app_server::RemoteControlStartupMode::DisabledEphemeral,
+                (false, false) => codex_app_server::RemoteControlStartupMode::ResolvePersisted,
+            };
 
         run_main_with_transport_options(
             arg0_paths,
